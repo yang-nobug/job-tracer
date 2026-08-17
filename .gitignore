@@ -1,0 +1,6 @@
+node_modules/
+data/
+server/public/
+backups/
+config.json
+*.log

@@ -51,7 +51,7 @@ async function removeEvent(id: number): Promise<void> {
     <div class="add-event">
       <el-input
         v-model="newContent"
-        placeholder="记一笔动态，如：HR 说下周安排一面"
+        placeholder="添加动态，如：HR 说下周安排一面"
         @keyup.enter="addEvent"
       />
       <el-button type="primary" :loading="adding" @click="addEvent">添加</el-button>

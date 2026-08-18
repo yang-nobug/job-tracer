@@ -40,7 +40,7 @@ onUnmounted(() => {
           <router-link to="/stats" class="nav-link" :class="{ active: route.path === '/stats' }">统计</router-link>
           <router-link to="/reviews" class="nav-link" :class="{ active: route.path === '/reviews' }">复盘</router-link>
         </nav>
-        <el-button type="primary" round @click="openCreateForm()">+ 记一笔</el-button>
+        <el-button type="primary" round @click="openCreateForm()">+ 新增投递</el-button>
       </div>
       <CountdownBar :items="upcoming" />
     </header>
@@ -66,15 +66,16 @@ onUnmounted(() => {
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: #f5f7fa;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: #f4f6fa;
   color: #303133;
+  -webkit-font-smoothing: antialiased;
 }
 .layout { min-height: 100vh; }
 
-.header { background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08); position: sticky; top: 0; z-index: 100; }
+.header { background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08); position: sticky; top: 0; z-index: 100; padding-top: 12px; }
 .header-inner {
-  max-width: 1200px; margin: 0 auto; padding: 0 16px;
+  max-width: 1600px; margin: 0 auto; padding: 0 24px;
   display: flex; align-items: center; gap: 20px; height: 56px;
 }
 .brand { font-weight: 700; font-size: 18px; white-space: nowrap; }
@@ -85,7 +86,7 @@ body {
 .nav-link.active { color: #409eff; background: #ecf5ff; font-weight: 600; }
 .header-inner .el-button { margin-left: auto; }
 
-.main { max-width: 1200px; margin: 0 auto; padding: 16px; padding-bottom: 72px; }
+.main { max-width: 1600px; margin: 0 auto; padding: 16px 24px; padding-bottom: 72px; }
 
 .nav-mobile { display: none; }
 

@@ -21,12 +21,12 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
   const rejected = apps.filter((a) => a.rejected_at)
   const offers = apps.filter((a) => a.status === 'offer' && !a.rejected_at)
 
-  // 漏斗：投递 -> 约面 -> 终面 -> Offer
-  const reachedInterview = applied.filter((a) => statusRank(a.status) >= statusRank('interviewing'))
+  // 漏斗：投递 -> 面试 -> 终面 -> Offer
+  const reachedInterview = applied.filter((a) => statusRank(a.status) >= statusRank('round1'))
   const reachedFinal = applied.filter((a) => statusRank(a.status) >= statusRank('round3'))
   const funnel = [
     { name: '投递', value: applied.length },
-    { name: '约面', value: reachedInterview.length },
+    { name: '面试', value: reachedInterview.length },
     { name: '终面', value: reachedFinal.length },
     { name: 'Offer', value: offers.length + apps.filter((a) => a.status === 'offer' && a.rejected_at).length }
   ]

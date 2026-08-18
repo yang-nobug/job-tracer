@@ -80,6 +80,13 @@ CREATE TABLE IF NOT EXISTS checklist_items (
 );
 `)
 
+// 数据迁移：曾短暂把轮次状态合并为 interviewing，按最新面试记录恢复轮次（无记录则归为一面）
+db.prepare(`UPDATE applications SET status = CASE
+  (SELECT round FROM interviews WHERE application_id = applications.id ORDER BY scheduled_at DESC, id DESC LIMIT 1)
+  WHEN '一面' THEN 'round1' WHEN '二面' THEN 'round2' WHEN '三面' THEN 'round3' WHEN 'HR面' THEN 'hr'
+  ELSE 'round1' END
+  WHERE status = 'interviewing'`).run()
+
 export function now(): string {
   return new Date().toISOString()
 }

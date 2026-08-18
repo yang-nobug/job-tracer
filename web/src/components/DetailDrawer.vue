@@ -3,7 +3,8 @@ import { ref, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, openEditForm, bumpData } from '../store'
-import { STATUS_LABELS, STATUS_LABEL_LIST, type ApplicationDetail, type Status } from '../types'
+import { STATUS_LABEL_LIST, type ApplicationDetail, type Status } from '../types'
+import { avatarColor } from '../utils/avatar'
 import StatusTag from './StatusTag.vue'
 import EventTimeline from './EventTimeline.vue'
 import InterviewPanel from './InterviewPanel.vue'
@@ -97,41 +98,72 @@ function fmtDate(s: string | null): string {
 </script>
 
 <template>
-  <el-drawer v-model="visible" size="520px" :title="detail ? `${detail.company} · ${detail.position}` : ''" destroy-on-close>
+  <el-dialog v-model="visible" width="720px" top="6vh" destroy-on-close>
     <div v-if="detail" class="detail">
+      <!-- 头部：公司头像 + 名称/职位 + 状态 -->
+      <div class="detail-head">
+        <span class="head-avatar" :style="{ background: avatarColor(detail.company) }">
+          {{ detail.company.slice(0, 1) }}
+        </span>
+        <div class="head-info">
+          <div class="head-company">{{ detail.company }}</div>
+          <div class="head-position">{{ detail.position }}</div>
+        </div>
+        <StatusTag :app="detail" />
+      </div>
+
       <div class="detail-actions">
-        <el-select :model-value="detail.status" style="width: 110px" @change="changeStatus">
+        <el-select :model-value="detail.status" style="width: 118px" size="small" @change="changeStatus">
           <el-option v-for="s in STATUS_LABEL_LIST" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
-        <StatusTag :app="detail" />
         <el-button size="small" :type="detail.rejected_at ? 'success' : 'danger'" plain @click="toggleReject">
           {{ detail.rejected_at ? '撤销挂掉' : '标记挂掉' }}
         </el-button>
+        <span class="actions-spacer" />
         <el-button size="small" @click="openEditForm(detail)">编辑</el-button>
         <el-button size="small" type="danger" plain @click="removeApp">删除</el-button>
       </div>
 
-      <el-descriptions :column="2" border size="small" class="detail-desc">
-        <el-descriptions-item label="状态"><StatusTag :app="detail" /></el-descriptions-item>
-        <el-descriptions-item label="渠道">{{ detail.channel || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="投递日期">{{ fmtDate(detail.applied_at) }}</el-descriptions-item>
-        <el-descriptions-item label="地点">{{ detail.location || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="联系人">{{ detail.contact_name || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="联系方式">{{ detail.contact_info || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="简历" :span="2">
-          <a v-if="detail.resume" :href="`/api/resumes/${detail.resume.id}/file`" target="_blank" class="link">
-            {{ detail.resume.filename }}
-          </a>
-          <span v-else>—</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="JD 链接" :span="2">
-          <a v-if="detail.jd_link" :href="detail.jd_link" target="_blank" class="link">{{ detail.jd_link }}</a>
-          <span v-else>—</span>
-        </el-descriptions-item>
-        <el-descriptions-item v-if="detail.notes" label="备注" :span="2">{{ detail.notes }}</el-descriptions-item>
-      </el-descriptions>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">渠道</span>
+          <span class="info-value">{{ detail.channel || '-' }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">投递日期</span>
+          <span class="info-value">{{ fmtDate(detail.applied_at) }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">地点</span>
+          <span class="info-value">{{ detail.location || '-' }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">联系人</span>
+          <span class="info-value">{{ detail.contact_name || '-' }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">联系方式</span>
+          <span class="info-value">{{ detail.contact_info || '-' }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">简历</span>
+          <span class="info-value">
+            <a v-if="detail.resume" :href="`/api/resumes/${detail.resume.id}/file`" target="_blank" class="link">
+              {{ detail.resume.filename }}
+            </a>
+            <span v-else>-</span>
+          </span>
+        </div>
+        <div v-if="detail.jd_link" class="info-item">
+          <span class="info-label">JD 链接</span>
+          <span class="info-value">
+            <a :href="detail.jd_link" target="_blank" class="link">{{ detail.jd_link }}</a>
+          </span>
+        </div>
+      </div>
+      <div v-if="detail.notes" class="notes">{{ detail.notes }}</div>
 
-      <div v-if="detail.jd_text" class="jd-section">
+      <div v-if="detail.jd_text" class="section">
         <h4>📄 JD 正文</h4>
         <pre class="jd-text">{{ detail.jd_text }}</pre>
       </div>
@@ -146,21 +178,41 @@ function fmtDate(s: string | null): string {
         <EventTimeline :app-id="detail.id" />
       </section>
     </div>
-  </el-drawer>
+  </el-dialog>
 </template>
 
 <style scoped>
 .detail { display: flex; flex-direction: column; gap: 14px; }
+.detail-head {
+  display: flex; align-items: center; gap: 12px;
+  padding-bottom: 14px; border-bottom: 1px solid #ebeef5;
+}
+.head-avatar {
+  width: 44px; height: 44px; border-radius: 10px; flex-shrink: 0;
+  color: #fff; font-size: 22px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.head-info { flex: 1; min-width: 0; }
+.head-company { font-size: 18px; font-weight: 700; color: #1f2637; line-height: 1.3; }
+.head-position { font-size: 13px; color: #6b7385; margin-top: 2px; }
 .detail-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.detail-desc { margin-top: 0; }
-.jd-section h4 { margin: 6px 0 10px; font-size: 14px; color: #303133; }
-.jd-section pre.jd-text {
+.actions-spacer { flex: 1; }
+.info-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px 16px; background: #f7f9fc; border-radius: 10px; padding: 14px;
+}
+.info-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.info-label { font-size: 12px; color: #9aa2b1; }
+.info-value { font-size: 13px; color: #3c4353; word-break: break-all; }
+.notes {
+  background: #fdf8ef; border-radius: 10px; padding: 12px 14px;
+  font-size: 13px; color: #6b5b3e; white-space: pre-wrap;
+}
+.section { background: #f7f9fc; border-radius: 10px; padding: 14px; }
+.section h4 { margin: 0 0 10px; font-size: 14px; color: #303133; }
+pre.jd-text {
   white-space: pre-wrap; word-break: break-all; font-size: 13px; margin: 0;
-  max-height: 260px; overflow: auto; background: #f8f9fb; padding: 10px; border-radius: 6px;
+  max-height: 260px; overflow: auto; background: #fff; padding: 10px; border-radius: 8px;
 }
-.section h4 { margin: 6px 0 10px; font-size: 14px; color: #303133; }
 .link { color: #409eff; text-decoration: none; word-break: break-all; }
-@media (max-width: 768px) {
-  .el-drawer { width: 100% !important; }
-}
 </style>

@@ -1,17 +1,19 @@
 // 与 server/src/types.ts 保持同步
-export const STATUS_ORDER = ['unsent', 'applied', 'interviewing', 'round1', 'round2', 'round3', 'hr', 'offer'] as const
+export const STATUS_ORDER = ['unsent', 'applied', 'round1', 'round2', 'round3', 'hr', 'offer'] as const
 export type Status = (typeof STATUS_ORDER)[number]
 
 export const STATUS_LABELS: Record<Status, string> = {
   unsent: '未投递',
   applied: '已投递',
-  interviewing: '约面',
   round1: '一面',
   round2: '二面',
   round3: '三面',
   hr: 'HR面',
   offer: 'Offer'
 }
+
+/** 看板分组：面试组包含的轮次状态 */
+export const INTERVIEW_STATUSES: Status[] = ['round1', 'round2', 'round3', 'hr']
 
 export const STATUS_LABEL_LIST: { value: Status; label: string }[] = STATUS_ORDER.map((s) => ({
   value: s,
@@ -39,6 +41,10 @@ export interface Application {
   reject_type: 'company' | 'me' | null
   created_at: string
   updated_at: string
+  /** 列表接口附带的冗余字段：最新一场面试的轮次（一面/二面/…） */
+  last_round?: string | null
+  /** 列表接口附带的冗余字段：最近一场未完成面试的时间（YYYY-MM-DD HH:mm） */
+  next_interview_at?: string | null
 }
 
 export interface Resume {

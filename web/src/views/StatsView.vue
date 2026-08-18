@@ -77,7 +77,7 @@ const cards = computed(() => [
 <template>
   <div v-loading="loading">
     <div v-if="stats && stats.cards.total === 0" class="empty-wrap">
-      <el-empty description="还没有数据，先去记一笔吧" />
+      <el-empty description="还没有数据，先去新增投递吧" />
     </div>
     <template v-else>
       <div class="cards">

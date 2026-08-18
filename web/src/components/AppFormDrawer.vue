@@ -94,7 +94,7 @@ watch(
   }
 )
 
-const title = computed(() => (props.editing ? `编辑：${props.editing.company}` : '记一笔'))
+const title = computed(() => (props.editing ? `编辑：${props.editing.company}` : '新增投递'))
 
 async function save(): Promise<void> {
   if (!form.company.trim() || !form.position.trim()) {
@@ -198,65 +198,77 @@ const channels = computed(() => DEFAULT_CHANNELS)
 </script>
 
 <template>
-  <el-drawer
+  <el-dialog
     :model-value="modelValue"
     :title="title"
-    size="480px"
+    width="720px"
+    top="6vh"
     destroy-on-close
     @update:model-value="emit('update:modelValue', $event)"
   >
+    <div class="jd-parse-bar" @click="openJdDialog">
+      <span class="jd-parse-icon">📄</span>
+      <span class="jd-parse-text">
+        <b>粘贴 JD 智能解析</b>
+        <small>自动识别公司 / 职位 / 地点，帮你填好基本信息</small>
+      </span>
+      <el-button size="small" plain>去解析</el-button>
+    </div>
+
     <el-form label-width="82px" label-position="left" class="app-form">
-      <el-form-item label="公司" required>
-        <el-autocomplete
-          v-model="form.company"
-          :fetch-suggestions="queryCompanies"
-          value-key="company"
-          placeholder="公司名"
-          style="width: 100%"
-          @select="onCompanySelected"
-        />
-      </el-form-item>
-      <el-form-item label="职位" required>
-        <el-input v-model="form.position" placeholder="职位名" />
-      </el-form-item>
-      <el-form-item label="状态">
-        <el-select v-model="form.status" style="width: 100%">
-          <el-option v-for="s in STATUS_LABEL_LIST" :key="s.value" :label="s.label" :value="s.value" />
-        </el-select>
-      </el-form-item>
-      <el-form-item v-if="form.status !== 'unsent'" label="投递日期" required>
-        <el-date-picker v-model="form.applied_at" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
-      </el-form-item>
-      <el-form-item label="渠道">
-        <el-select v-model="form.channel" allow-create filterable clearable placeholder="选择或输入" style="width: 100%">
-          <el-option v-for="c in channels" :key="c" :label="c" :value="c" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="地点">
-        <el-input v-model="form.location" placeholder="如：北京市海淀区" />
-      </el-form-item>
-      <el-form-item label="简历">
-        <ResumePicker v-model="form.resume_id" :reload-trigger="resumesReloadTrigger" />
-      </el-form-item>
-      <el-form-item label="JD 链接">
-        <el-input v-model="form.jd_link" placeholder="https://..." />
-      </el-form-item>
-      <el-form-item label="JD 正文">
-        <el-input v-model="form.jd_text" type="textarea" :rows="4" placeholder="粘贴职位描述快照（可选）" />
-      </el-form-item>
-      <el-form-item label="联系人">
-        <el-input v-model="form.contact_name" placeholder="HR / 猎头姓名" />
-      </el-form-item>
-      <el-form-item label="联系方式">
-        <el-input v-model="form.contact_info" placeholder="电话 / 微信 / 邮箱" />
-      </el-form-item>
-      <el-form-item label="备注">
-        <el-input v-model="form.notes" type="textarea" :rows="2" />
-      </el-form-item>
+      <div class="form-grid">
+        <el-form-item label="公司" required>
+          <el-autocomplete
+            v-model="form.company"
+            :fetch-suggestions="queryCompanies"
+            value-key="company"
+            placeholder="公司名"
+            style="width: 100%"
+            @select="onCompanySelected"
+          />
+        </el-form-item>
+        <el-form-item label="职位" required>
+          <el-input v-model="form.position" placeholder="职位名" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="form.status" style="width: 100%">
+            <el-option v-for="s in STATUS_LABEL_LIST" :key="s.value" :label="s.label" :value="s.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.status !== 'unsent'" label="投递日期" required>
+          <el-date-picker v-model="form.applied_at" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="渠道">
+          <el-select v-model="form.channel" allow-create filterable clearable placeholder="选择或输入" style="width: 100%">
+            <el-option v-for="c in channels" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="地点">
+          <el-input v-model="form.location" placeholder="如：北京市海淀区" />
+        </el-form-item>
+        <el-form-item label="联系人">
+          <el-input v-model="form.contact_name" placeholder="HR / 猎头姓名" />
+        </el-form-item>
+        <el-form-item label="联系方式">
+          <el-input v-model="form.contact_info" placeholder="电话 / 微信 / 邮箱" />
+        </el-form-item>
+        <el-form-item label="简历" class="span-2">
+          <ResumePicker v-model="form.resume_id" :reload-trigger="resumesReloadTrigger" />
+        </el-form-item>
+        <el-form-item label="JD 链接" class="span-2">
+          <el-input v-model="form.jd_link" placeholder="https://..." />
+        </el-form-item>
+        <el-form-item label="JD 正文" class="span-2">
+          <el-input v-model="form.jd_text" type="textarea" :rows="4" placeholder="粘贴职位描述快照（可选）" />
+        </el-form-item>
+        <el-form-item label="备注" class="span-2">
+          <el-input v-model="form.notes" type="textarea" :rows="2" />
+        </el-form-item>
+      </div>
     </el-form>
 
     <template #footer>
-      <div class="drawer-footer">
+      <div class="dialog-footer">
         <el-button @click="openJdDialog">📄 粘贴 JD 解析</el-button>
         <div>
           <el-button @click="emit('update:modelValue', false)">取消</el-button>
@@ -273,12 +285,26 @@ const channels = computed(() => DEFAULT_CHANNELS)
         <el-button type="primary" :loading="aiParsing" @click="parseJdAi">✨ AI 解析</el-button>
       </template>
     </el-dialog>
-  </el-drawer>
+  </el-dialog>
 </template>
 
 <style scoped>
-.drawer-footer { display: flex; justify-content: space-between; width: 100%; }
+.jd-parse-bar {
+  display: flex; align-items: center; gap: 12px;
+  border: 1.5px dashed #c6d2e3; border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 18px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.jd-parse-bar:hover { border-color: #409eff; background: #f5f9ff; }
+.jd-parse-icon { font-size: 20px; }
+.jd-parse-text { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.jd-parse-text b { font-size: 14px; color: #3c4353; }
+.jd-parse-text small { font-size: 12px; color: #9aa2b1; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; }
+.form-grid .span-2 { grid-column: span 2; }
+.dialog-footer { display: flex; justify-content: space-between; align-items: center; width: 100%; }
 @media (max-width: 768px) {
-  .el-drawer { width: 100% !important; }
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid .span-2 { grid-column: auto; }
 }
 </style>

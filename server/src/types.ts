@@ -3,7 +3,6 @@
 export const STATUS_ORDER = [
   'unsent',
   'applied',
-  'interviewing',
   'round1',
   'round2',
   'round3',
@@ -16,13 +15,15 @@ export type Status = (typeof STATUS_ORDER)[number]
 export const STATUS_LABELS: Record<Status, string> = {
   unsent: '未投递',
   applied: '已投递',
-  interviewing: '约面',
   round1: '一面',
   round2: '二面',
   round3: '三面',
   hr: 'HR面',
   offer: 'Offer'
 }
+
+/** 看板分组：面试组包含的轮次状态 */
+export const INTERVIEW_STATUSES: Status[] = ['round1', 'round2', 'round3', 'hr']
 
 export const STATUS_LABEL_LIST: { value: Status; label: string }[] =
   STATUS_ORDER.map((s) => ({ value: s, label: STATUS_LABELS[s] }))

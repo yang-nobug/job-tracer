@@ -2,14 +2,23 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { db, now, today } from '../db.js'
 import { createReviewFile, readReviewFile, writeReviewFile } from '../review-file.js'
+import { STATUS_ORDER, STATUS_LABELS, type Status } from '../types.js'
 
 export const interviewsRouter = Router()
+
+// 面试轮次对应的状态（添加面试时自动推进）
+const ROUND_TO_STATUS: Record<string, Status> = {
+  一面: 'round1',
+  二面: 'round2',
+  三面: 'round3',
+  HR面: 'hr'
+}
 
 // 添加面试：自动生成复盘 md + 写时间线事件
 interviewsRouter.post('/applications/:id/interviews', (req: Request, res: Response) => {
   const app = db
     .prepare('SELECT * FROM applications WHERE id = ?')
-    .get(req.params.id) as { id: number; company: string } | undefined
+    .get(req.params.id) as { id: number; company: string; status: Status } | undefined
   if (!app) {
     res.status(404).json({ message: '记录不存在' })
     return
@@ -36,6 +45,16 @@ interviewsRouter.post('/applications/:id/interviews', (req: Request, res: Respon
     `INSERT INTO events (application_id, type, event_date, content, created_at)
      VALUES (?, 'interview', ?, ?, ?)`
   ).run(app.id, today(), `添加面试：${round} ${scheduledAt}${req.body?.location ? ' @' + req.body.location : ''}`, now())
+
+  // 添加面试时自动推进状态（只前进不后退；「其他」轮次不映射）
+  const target = ROUND_TO_STATUS[round]
+  if (target && STATUS_ORDER.indexOf(target) > STATUS_ORDER.indexOf(app.status)) {
+    db.prepare('UPDATE applications SET status=?, updated_at=? WHERE id=?').run(target, now(), app.id)
+    db.prepare(
+      `INSERT INTO events (application_id, type, event_date, content, created_at)
+       VALUES (?, 'status', ?, ?, ?)`
+    ).run(app.id, today(), `状态：${STATUS_LABELS[app.status]} -> ${STATUS_LABELS[target]}`, now())
+  }
 
   res.status(201).json(db.prepare('SELECT * FROM interviews WHERE id = ?').get(result.lastInsertRowid))
 })

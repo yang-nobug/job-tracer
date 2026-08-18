@@ -91,7 +91,13 @@ applicationsRouter.get('/', (req: Request, res: Response) => {
     params.to = to
   }
 
-  const sql = `SELECT * FROM applications ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC`
+  const sql = `SELECT *,
+    (SELECT round FROM interviews WHERE application_id = applications.id
+     ORDER BY scheduled_at DESC, id DESC LIMIT 1) AS last_round,
+    (SELECT scheduled_at FROM interviews WHERE application_id = applications.id
+     AND done = 0
+     ORDER BY scheduled_at ASC, id DESC LIMIT 1) AS next_interview_at
+    FROM applications ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC`
   res.json(db.prepare(sql).all(params))
 })
 

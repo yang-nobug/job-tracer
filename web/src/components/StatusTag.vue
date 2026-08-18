@@ -12,11 +12,11 @@ const tagType = computed(() => {
   const map: Record<string, string> = {
     unsent: 'info',
     applied: '',
-    interviewing: 'warning',
     round1: 'warning',
     round2: 'warning',
     round3: 'warning',
     hr: 'warning',
+    interviewing: 'warning',
     offer: 'success'
   }
   return map[props.app.status] ?? ''

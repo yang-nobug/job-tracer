@@ -6,8 +6,11 @@ import { STATUS_ORDER, STATUS_LABELS, type Status } from '../types.js'
 
 export const interviewsRouter = Router()
 
-// 面试轮次对应的状态（添加面试时自动推进）
+// 环节/轮次对应的状态（添加时自动推进）
 const ROUND_TO_STATUS: Record<string, Status> = {
+  心理测评: 'assessment',
+  笔试: 'testing',
+  AI面: 'ai',
   一面: 'round1',
   二面: 'round2',
   三面: 'round3',

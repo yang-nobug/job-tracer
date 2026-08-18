@@ -12,6 +12,9 @@ const tagType = computed(() => {
   const map: Record<string, string> = {
     unsent: 'info',
     applied: '',
+    assessment: 'info',
+    testing: 'primary',
+    ai: 'primary',
     round1: 'warning',
     round2: 'warning',
     round3: 'warning',

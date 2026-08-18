@@ -40,9 +40,10 @@ function validate(body: AppBody): { error?: string; values?: Record<string, unkn
 
   const status: Status = body.status != null && isStatus(body.status) ? body.status : 'unsent'
 
-  // 标记"已投递"及之后的状态时，投递日期必填（缺省自动填今天）
+  // 标记"已投递"及之后的状态时，投递日期必填（缺省自动填今天）；改回未投递则清掉日期
   let applied_at: string | null = body.applied_at ? body.applied_at : null
   if (status !== 'unsent' && !applied_at) applied_at = today()
+  if (status === 'unsent') applied_at = null
 
   return {
     values: {

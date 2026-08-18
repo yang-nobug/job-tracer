@@ -27,7 +27,7 @@ interface FormState {
 function emptyForm(): FormState {
   return {
     company: '', position: '', status: 'unsent', applied_at: null,
-    channel: '', location: '', resume_id: null,
+    channel: '官网', location: '', resume_id: null,
     jd_link: '', jd_text: '', contact_name: '', contact_info: '', notes: ''
   }
 }
@@ -56,7 +56,8 @@ function queryCompanies(queryString: string, cb: (results: CompanyMeta[]) => voi
 
 function onCompanySelected(item: CompanyMeta): void {
   if (!form.location && item.location) form.location = item.location
-  if (!form.channel && item.channel) form.channel = item.channel
+  // 未手动改过渠道时，选中已有公司带出其常用渠道
+  if ((!form.channel || form.channel === '官网') && item.channel) form.channel = item.channel
 }
 
 // 状态联动：进入已投递及之后状态时默认填今天

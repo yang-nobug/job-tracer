@@ -3,6 +3,9 @@
 export const STATUS_ORDER = [
   'unsent',
   'applied',
+  'assessment',
+  'testing',
+  'ai',
   'round1',
   'round2',
   'round3',
@@ -15,12 +18,18 @@ export type Status = (typeof STATUS_ORDER)[number]
 export const STATUS_LABELS: Record<Status, string> = {
   unsent: '未投递',
   applied: '已投递',
+  assessment: '心理测评',
+  testing: '笔试',
+  ai: 'AI面',
   round1: '一面',
   round2: '二面',
   round3: '三面',
   hr: 'HR面',
   offer: 'Offer'
 }
+
+/** 看板分组：考核组包含的环节状态 */
+export const ASSESSMENT_STATUSES: Status[] = ['assessment', 'testing', 'ai']
 
 /** 看板分组：面试组包含的轮次状态 */
 export const INTERVIEW_STATUSES: Status[] = ['round1', 'round2', 'round3', 'hr']

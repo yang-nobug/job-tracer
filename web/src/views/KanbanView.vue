@@ -5,7 +5,7 @@ import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { store, openDetail } from '../store'
 import { avatarColor } from '../utils/avatar'
-import { STATUS_ORDER, STATUS_LABELS, INTERVIEW_STATUSES, type Application, type Status } from '../types'
+import { STATUS_ORDER, STATUS_LABELS, ASSESSMENT_STATUSES, INTERVIEW_STATUSES, type Application, type Status } from '../types'
 
 const apps = ref<Application[]>([])
 
@@ -28,8 +28,8 @@ interface KanbanColumn {
   list: Application[]
 }
 
-// 看板分三段：前段（未投递/已投递）、面试组（一面~HR面）、后段（Offer/已挂）
-const columns = computed<{ before: KanbanColumn[]; interview: KanbanColumn[]; after: KanbanColumn[] }>(() => {
+// 看板分四段：前段（未投递/已投递）、考核组（心理测评/笔试/AI面）、面试组（一面~HR面）、后段（Offer/已挂）
+const columns = computed<{ before: KanbanColumn[]; assessment: KanbanColumn[]; interview: KanbanColumn[]; after: KanbanColumn[] }>(() => {
   const mk = (key: Status | 'rejected', label: string): KanbanColumn => ({
     key,
     label,
@@ -44,18 +44,26 @@ const columns = computed<{ before: KanbanColumn[]; interview: KanbanColumn[]; af
   const all: KanbanColumn[] = STATUS_ORDER.map((s) => mk(s, STATUS_LABELS[s]))
   all.push(mk('rejected', '已挂'))
 
+  const assessmentKeys: readonly string[] = ASSESSMENT_STATUSES
   const interviewKeys: readonly string[] = INTERVIEW_STATUSES
   return {
     before: all.filter((c) => c.key === 'unsent' || c.key === 'applied'),
+    assessment: all.filter((c) => assessmentKeys.includes(c.key)),
     interview: all.filter((c) => interviewKeys.includes(c.key)),
     after: all.filter((c) => c.key === 'offer' || c.key === 'rejected')
   }
 })
 
+const assessmentTotal = computed(() => columns.value.assessment.reduce((n, c) => n + c.list.length, 0))
 const interviewTotal = computed(() => columns.value.interview.reduce((n, c) => n + c.list.length, 0))
 
 function getListRef(key: string): Application[] {
-  const all = [...columns.value.before, ...columns.value.interview, ...columns.value.after]
+  const all = [
+    ...columns.value.before,
+    ...columns.value.assessment,
+    ...columns.value.interview,
+    ...columns.value.after
+  ]
   return all.find((c) => c.key === key)?.list ?? []
 }
 
@@ -68,8 +76,8 @@ async function onChange(key: Status | 'rejected'): Promise<void> {
     const statusChanged = !wantRejected && app.status !== key
     if (!rejectChanged && !statusChanged) continue
 
-    // 拖入面试子列且该轮次还没有面试记录 -> 先弹窗补面试时间
-    const roundLabel = INTERVIEW_STATUSES.includes(key as Status) ? STATUS_LABELS[key as Status] : null
+    // 拖入考核/面试子列且该环节还没有记录 -> 先弹窗补时间
+    const roundLabel = ROUND_COL_KEYS.includes(key as Status) ? STATUS_LABELS[key as Status] : null
     if (!wantRejected && roundLabel && app.last_round !== roundLabel) {
       pendingInterview.value = { app, key: key as Status }
       ivForm.scheduled_at = ''
@@ -114,7 +122,7 @@ async function confirmInterview(): Promise<void> {
       scheduled_at: ivForm.scheduled_at,
       location: ivForm.location
     })
-    ElMessage.success(`已添加${STATUS_LABELS[p.key]}面试`)
+    ElMessage.success(`已记录${STATUS_LABELS[p.key]}安排`)
     store.dataVersion++
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -132,12 +140,18 @@ function dragDisabled(): boolean {
   return window.innerWidth <= 768
 }
 
+// 拖入这些列视为一个环节，需要补时间并生成记录（考核组 + 面试组）
+const ROUND_COL_KEYS: readonly Status[] = [...ASSESSMENT_STATUSES, ...INTERVIEW_STATUSES]
+
 // 头像取色逻辑在 utils/avatar.ts，与详情弹窗共用
 
-// 每列的身份色：面试组内各轮次由浅到深渐变，Offer 绿，已挂灰
+// 每列的身份色：考核组蓝青系，面试组橙色渐变，Offer 绿，已挂灰
 const COLUMN_COLORS: Record<string, string> = {
   unsent: '#94a3b8',
   applied: '#5b8def',
+  assessment: '#8fa3bf',
+  testing: '#38bdf8',
+  ai: '#2dd4bf',
   round1: '#f5a623',
   round2: '#f97316',
   round3: '#ef4444',
@@ -145,6 +159,7 @@ const COLUMN_COLORS: Record<string, string> = {
   offer: '#22c55e',
   rejected: '#b6bcc8'
 }
+const ASSESSMENT_GROUP_COLOR = '#38bdf8'
 const GROUP_COLOR = '#f5a623'
 </script>
 
@@ -196,6 +211,65 @@ const GROUP_COLOR = '#f5a623'
           </div>
         </template>
       </draggable>
+    </div>
+
+    <!-- 考核组：心理测评 / 笔试 / AI面 -->
+    <div class="kanban-group assessment-group">
+      <div class="col-head">
+        <span class="col-title">
+          <span class="col-dot" :style="{ background: ASSESSMENT_GROUP_COLOR }" />
+          考核
+        </span>
+        <span class="col-count">{{ assessmentTotal }}</span>
+      </div>
+      <div class="group-body">
+        <div v-for="col in columns.assessment" :key="col.key" class="kanban-subcol">
+          <div class="sub-head">
+            <span class="sub-title">
+              <span class="col-dot" :style="{ background: COLUMN_COLORS[col.key] }" />
+              {{ col.label }}
+            </span>
+            <span class="sub-count">{{ col.list.length }}</span>
+          </div>
+          <draggable
+            :list="col.list"
+            :group="'apps'"
+            item-key="id"
+            :disabled="dragDisabled()"
+            class="col-body"
+            ghost-class="card-ghost"
+            @change="onChange(col.key)"
+          >
+            <template #item="{ element }">
+              <div
+                class="card"
+                :class="{ 'card-offer': element.status === 'offer', 'card-dead': !!element.rejected_at }"
+                :style="{ borderColor: COLUMN_COLORS[col.key] + '66' }"
+                @click="openDetail(element.id)"
+              >
+                <div class="card-top">
+                  <span class="card-avatar" :style="{ background: avatarColor(element.company) }">
+                    {{ element.company.slice(0, 1) }}
+                  </span>
+                  <span class="card-company">{{ element.company }}</span>
+                  <span v-if="element.rejected_at" class="card-rejected">
+                    {{ element.reject_type === 'me' ? '我拒' : '挂' }}
+                  </span>
+                  <a v-if="element.jd_link" class="card-link" :href="element.jd_link" target="_blank" @click.stop>🔗</a>
+                </div>
+                <div class="card-position">{{ element.position }}</div>
+                <div class="card-meta">
+                  <span>{{ element.applied_at?.slice(5) || '未投' }}</span>
+                  <span v-if="element.next_interview_at" class="card-next">
+                    🎤 {{ element.next_interview_at.slice(5, 11) }}
+                  </span>
+                  <span v-else-if="element.channel" class="card-channel">{{ element.channel }}</span>
+                </div>
+              </div>
+            </template>
+          </draggable>
+        </div>
+      </div>
     </div>
 
     <!-- 面试组：内含各轮次子列 -->
@@ -305,10 +379,10 @@ const GROUP_COLOR = '#f5a623'
       </draggable>
     </div>
 
-    <!-- 拖入面试列时补充面试时间 -->
+    <!-- 拖入考核/面试列时补充时间 -->
     <el-dialog
       :model-value="!!pendingInterview"
-      title="添加面试"
+      title="安排环节"
       width="420px"
       append-to-body
       destroy-on-close
@@ -316,13 +390,13 @@ const GROUP_COLOR = '#f5a623'
     >
       <div v-if="pendingInterview" class="iv-prompt">
         <p class="iv-prompt-tip">
-          「{{ pendingInterview.app.company }}」进入 <b>{{ STATUS_LABELS[pendingInterview.key] }}</b>，补充面试时间后会自动生成复盘文档：
+          「{{ pendingInterview.app.company }}」进入 <b>{{ STATUS_LABELS[pendingInterview.key] }}</b>，补充时间后会自动生成复盘文档：
         </p>
         <el-date-picker
           v-model="ivForm.scheduled_at"
           type="datetime"
           value-format="YYYY-MM-DD HH:mm"
-          placeholder="面试时间"
+          placeholder="环节时间"
           style="width: 100%"
         />
         <el-input v-model="ivForm.location" placeholder="地点 / 会议链接（可选）" style="margin-top: 10px" />
@@ -351,6 +425,8 @@ const GROUP_COLOR = '#f5a623'
   flex: 3.6 3.6 0; min-width: 420px;
   display: flex; flex-direction: column; max-height: calc(100vh - 150px);
 }
+/* 考核组：3 个子列 */
+.assessment-group { flex: 2.7 2.7 0; min-width: 320px; }
 .group-body {
   flex: 1; display: flex; gap: 6px; padding: 0 8px 8px;
   min-height: 0; overflow-x: auto;
@@ -444,5 +520,6 @@ const GROUP_COLOR = '#f5a623'
 @media (max-width: 768px) {
   .kanban-col { flex: 0 0 160px; min-width: 160px; }
   .kanban-group { flex: 0 0 440px; min-width: 440px; }
+  .assessment-group { flex: 0 0 330px; min-width: 330px; }
 }
 </style>

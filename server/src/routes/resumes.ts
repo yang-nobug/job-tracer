@@ -9,6 +9,13 @@ export const resumesRouter = Router()
 
 const ALLOWED_EXT = ['.pdf', '.doc', '.docx']
 
+// multer 把 multipart 文件名按 latin1 解码，中文会变乱码：能无损还原成 UTF-8 时采用还原结果
+function fixOriginalName(name: string): string {
+  const bytes = Buffer.from(name, 'latin1')
+  const decoded = bytes.toString('utf8')
+  return decoded !== name && Buffer.from(decoded, 'utf8').equals(bytes) ? decoded : name
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOADS_DIR,
@@ -38,7 +45,7 @@ resumesRouter.post('/', upload.single('file'), (req: Request, res: Response) => 
   const result = db
     .prepare('INSERT INTO resumes (filename, stored_name, size, note, uploaded_at) VALUES (?, ?, ?, ?, ?)')
     .run(
-      req.file.originalname,
+      fixOriginalName(req.file.originalname),
       req.file.filename,
       req.file.size,
       req.body?.note?.trim() || null,

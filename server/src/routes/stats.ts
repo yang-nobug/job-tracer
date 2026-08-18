@@ -16,16 +16,19 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
     .all() as { status: Status; applied_at: string | null; rejected_at: string | null; channel: string | null }[]
 
   const total = apps.length
-  const applied = apps.filter((a) => a.applied_at) // 已投出
+  // 已投出：状态推进过「未投递」的记录（未投递不算投递量）
+  const applied = apps.filter((a) => a.status !== 'unsent' && a.applied_at)
   const active = applied.filter((a) => !a.rejected_at && a.status !== 'offer')
   const rejected = apps.filter((a) => a.rejected_at)
   const offers = apps.filter((a) => a.status === 'offer' && !a.rejected_at)
 
-  // 漏斗：投递 -> 面试 -> 终面 -> Offer
+  // 漏斗：投递 -> 笔试 -> 面试 -> 终面 -> Offer
+  const reachedTesting = applied.filter((a) => statusRank(a.status) >= statusRank('testing'))
   const reachedInterview = applied.filter((a) => statusRank(a.status) >= statusRank('round1'))
   const reachedFinal = applied.filter((a) => statusRank(a.status) >= statusRank('round3'))
   const funnel = [
     { name: '投递', value: applied.length },
+    { name: '笔试', value: reachedTesting.length },
     { name: '面试', value: reachedInterview.length },
     { name: '终面', value: reachedFinal.length },
     { name: 'Offer', value: offers.length + apps.filter((a) => a.status === 'offer' && a.rejected_at).length }
@@ -46,9 +49,9 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
     })
   }
 
-  // 渠道分布
+  // 渠道分布（只统计已投出的记录）
   const channelMap = new Map<string, number>()
-  for (const a of apps) {
+  for (const a of applied) {
     const c = a.channel || '未填写'
     channelMap.set(c, (channelMap.get(c) ?? 0) + 1)
   }

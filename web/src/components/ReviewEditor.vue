@@ -24,7 +24,7 @@ const rendered = computed(() => md.render(content.value))
 
 onMounted(async () => {
   try {
-    const r = await api.get<{ content: string }>(`/interviews/$glm-5.3_common/review`)
+    const r = await api.get<{ content: string }>(`/interviews/${props.interview.id}/review`)
     content.value = r.content
     draft.value = r.content
   } catch (err) {
@@ -42,7 +42,7 @@ function startEdit(): void {
 async function save(): Promise<void> {
   saving.value = true
   try {
-    await api.put(`/interviews/$glm-5.3_common/review`, { content: draft.value })
+    await api.put(`/interviews/${props.interview.id}/review`, { content: draft.value })
     content.value = draft.value
     editMode.value = false
     ElMessage.success('已保存')
@@ -55,7 +55,7 @@ async function save(): Promise<void> {
 
 async function reloadFromDisk(): Promise<void> {
   try {
-    const r = await api.get<{ content: string }>(`/interviews/$glm-5.3_common/review`)
+    const r = await api.get<{ content: string }>(`/interviews/${props.interview.id}/review`)
     content.value = r.content
     draft.value = r.content
     ElMessage.success('已从磁盘刷新')

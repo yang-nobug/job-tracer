@@ -35,7 +35,7 @@ async function addInterview(): Promise<void> {
 
 async function toggleDone(iv: Interview): Promise<void> {
   try {
-    await api.patch(`/interviews/$glm-5.3_common`, { done: !iv.done })
+    await api.patch(`/interviews/${iv.id}`, { done: !iv.done })
     bumpData()
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -47,7 +47,7 @@ async function removeInterview(iv: Interview): Promise<void> {
     await ElMessageBox.confirm(`删除「${iv.round} ${iv.scheduled_at}」的面试？其准备清单会一并删除（复盘 md 文件保留在磁盘）`, '删除确认', {
       type: 'warning'
     })
-    await api.delete(`/interviews/$glm-5.3_common`)
+    await api.delete(`/interviews/${iv.id}`)
     bumpData()
   } catch (err) {
     if ((err as { toString(): string }).toString().includes('cancel')) return
@@ -62,7 +62,7 @@ async function addChecklistItem(iv: Interview): Promise<void> {
   const content = (newItem[iv.id] || '').trim()
   if (!content) return
   try {
-    await api.post(`/interviews/$glm-5.3_common/checklist`, { content })
+    await api.post(`/interviews/${iv.id}/checklist`, { content })
     newItem[iv.id] = ''
     bumpData()
   } catch (err) {
@@ -72,7 +72,7 @@ async function addChecklistItem(iv: Interview): Promise<void> {
 
 async function toggleItem(itemId: number, done: boolean): Promise<void> {
   try {
-    await api.patch(`/checklist/$glm-5.3_common`, { done })
+    await api.patch(`/checklist/${itemId}`, { done })
     bumpData()
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -81,7 +81,7 @@ async function toggleItem(itemId: number, done: boolean): Promise<void> {
 
 async function removeItem(itemId: number): Promise<void> {
   try {
-    await api.delete(`/checklist/$glm-5.3_common`)
+    await api.delete(`/checklist/${itemId}`)
     bumpData()
   } catch (err) {
     ElMessage.error((err as Error).message)

@@ -49,7 +49,7 @@ async function onChange(key: Status | 'rejected'): Promise<void> {
     if (app.status !== key) {
       // 乐观更新已由 draggable 完成，这里发请求
       try {
-        await api.put(`/applications/$glm-5.3_common`, { ...app, status: key })
+        await api.put(`/applications/${app.id}`, { ...app, status: key })
         store.dataVersion++
       } catch (err) {
         ElMessage.error((err as Error).message)

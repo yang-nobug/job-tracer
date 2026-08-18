@@ -31,7 +31,7 @@ function onFilterChange(f: { status?: string; channel?: string; keyword?: string
 
 async function reject(app: Application): Promise<void> {
   try {
-    await api.patch(`/applications/$glm-5.3_common/reject`, { reject_type: 'company' })
+    await api.patch(`/applications/${app.id}/reject`, { reject_type: 'company' })
     ElMessage.success('已标记')
     bumpData()
   } catch (err) {
@@ -42,7 +42,7 @@ async function reject(app: Application): Promise<void> {
 async function remove(app: Application): Promise<void> {
   try {
     await ElMessageBox.confirm(`确定删除「${app.company} · ${app.position}」？`, '删除确认', { type: 'warning' })
-    await api.delete(`/applications/$glm-5.3_common`)
+    await api.delete(`/applications/${app.id}`)
     ElMessage.success('已删除')
     bumpData()
   } catch (err) {

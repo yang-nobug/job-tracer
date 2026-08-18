@@ -31,9 +31,15 @@ export function loadArkConfig(): ArkConfig | null {
   }
 }
 
+/** 多模态消息内容：纯文本，或 文本+图片 混合数组 */
+export type ChatContent = string | Array<
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+>
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: ChatContent
 }
 
 /** 发起一次 chat/completions 请求 */

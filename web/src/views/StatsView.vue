@@ -43,6 +43,27 @@ const funnelOption = computed<EChartsOption>(() => {
   }
 })
 
+const stageOption = computed<EChartsOption>(() => {
+  // 倒序渲染：心理测评在最上、HR面在最下，相邻两根条一比就是通过率
+  const s = [...(stats.value?.stages ?? [])].reverse()
+  return {
+    title: { text: '各环节经历岗位数', left: 'center', textStyle: { fontSize: 14 } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { left: 64, right: 36, top: 36, bottom: 24 },
+    xAxis: { type: 'value', minInterval: 1 },
+    yAxis: { type: 'category', data: s.map((x) => x.name) },
+    series: [
+      {
+        type: 'bar',
+        data: s.map((x) => x.value),
+        barMaxWidth: 18,
+        itemStyle: { color: '#38bdf8', borderRadius: [0, 4, 4, 0] },
+        label: { show: true, position: 'right' }
+      }
+    ]
+  }
+})
+
 const weeklyOption = computed<EChartsOption>(() => ({
   title: { text: '近 8 周投递量', left: 'center', textStyle: { fontSize: 14 } },
   tooltip: { trigger: 'axis' },
@@ -88,6 +109,7 @@ const cards = computed(() => [
       </div>
       <div class="charts">
         <el-card shadow="never" class="chart-card"><ChartBox :option="funnelOption" /></el-card>
+        <el-card shadow="never" class="chart-card"><ChartBox :option="stageOption" /></el-card>
         <el-card shadow="never" class="chart-card"><ChartBox :option="weeklyOption" /></el-card>
         <el-card shadow="never" class="chart-card"><ChartBox :option="channelOption" /></el-card>
       </div>
@@ -104,10 +126,8 @@ const cards = computed(() => [
 .stat-value { font-size: 30px; font-weight: 700; }
 .stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
 .charts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-.chart-card:nth-child(3) { grid-column: 1 / -1; }
 @media (max-width: 768px) {
   .cards { grid-template-columns: repeat(2, 1fr); }
   .charts { grid-template-columns: 1fr; }
-  .chart-card:nth-child(3) { grid-column: auto; }
 }
 </style>

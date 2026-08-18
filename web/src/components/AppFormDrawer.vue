@@ -256,8 +256,8 @@ const channels = computed(() => DEFAULT_CHANNELS)
         <el-form-item label="简历" class="span-2">
           <ResumePicker v-model="form.resume_id" :reload-trigger="resumesReloadTrigger" />
         </el-form-item>
-        <el-form-item label="JD 链接" class="span-2">
-          <el-input v-model="form.jd_link" placeholder="https://..." />
+        <el-form-item label="投递链接" class="span-2">
+          <el-input v-model="form.jd_link" placeholder="https://…（职位页 / 进度查询页，可选）" />
         </el-form-item>
         <el-form-item label="JD 正文" class="span-2">
           <el-input v-model="form.jd_text" type="textarea" :rows="4" placeholder="粘贴职位描述快照（可选）" />

@@ -37,6 +37,12 @@ export const INTERVIEW_STATUSES: Status[] = ['round1', 'round2', 'round3', 'hr']
 export const STATUS_LABEL_LIST: { value: Status; label: string }[] =
   STATUS_ORDER.map((s) => ({ value: s, label: STATUS_LABELS[s] }))
 
+/** 知识库题目分类（需求 3.9.1），后续可细化二级 */
+export const KNOWLEDGE_CATEGORIES = ['八股', '项目', '算法', '综合面试', '其他']
+
+/** 知识库掌握度：0 未掌握 / 1 模糊 / 2 已掌握 */
+export const MASTERY_LEVELS = [0, 1, 2] as const
+
 export const DEFAULT_CHANNELS = ['BOSS', '猎聘', '智联', '内推', '官网', '其他']
 
 export const ROUNDS = ['一面', '二面', '三面', 'HR面', '其他']

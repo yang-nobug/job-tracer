@@ -8,14 +8,26 @@ import KanbanView from './views/KanbanView.vue'
 import ListView from './views/ListView.vue'
 import StatsView from './views/StatsView.vue'
 import ReviewsView from './views/ReviewsView.vue'
+import KnowledgeView from './views/KnowledgeView.vue'
 
+// 双工作区（需求 3.10）：投递跟踪 /track/*，学习成长 /learn/*
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: '/', component: KanbanView },
-    { path: '/list', component: ListView },
-    { path: '/stats', component: StatsView },
-    { path: '/reviews', component: ReviewsView }
+    // 根路径进入上次停留的工作区（默认投递跟踪）
+    { path: '/', redirect: () => (localStorage.getItem('workspace') === 'learn' ? '/learn/reviews' : '/track/kanban') },
+    // 投递跟踪
+    { path: '/track/kanban', component: KanbanView },
+    { path: '/track/list', component: ListView },
+    { path: '/track/stats', component: StatsView },
+    // 学习成长
+    { path: '/learn/reviews', component: ReviewsView },
+    { path: '/learn/knowledge', component: KnowledgeView },
+    // 旧路由重定向（收藏链接不失效）
+    { path: '/kanban', redirect: '/track/kanban' },
+    { path: '/list', redirect: '/track/list' },
+    { path: '/stats', redirect: '/track/stats' },
+    { path: '/reviews', redirect: '/learn/reviews' }
   ]
 })
 

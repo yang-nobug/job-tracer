@@ -32,5 +32,17 @@ export const api = {
       if (!res.ok) throw new Error((body as { message?: string }).message || '上传失败')
       return body
     })
+  },
+
+  // 上传知识库截图（multipart，挂在面经下）
+  uploadKnowledgeImage: (sourceId: number, file: File) => {
+    const form = new FormData()
+    form.append('source_id', String(sourceId))
+    form.append('file', file)
+    return fetch(`${BASE}/knowledge/images`, { method: 'POST', body: form }).then(async (res) => {
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((body as { message?: string }).message || '上传失败')
+      return body
+    })
   }
 }

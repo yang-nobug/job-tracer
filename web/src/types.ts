@@ -110,6 +110,78 @@ export interface UpcomingInterview {
 export interface Stats {
   cards: { total: number; active: number; rejected: number; offer: number }
   funnel: { name: string; value: number }[]
+  /** 各环节实际经历的投递记录数（粒度是岗位，不是公司） */
+  stages: { name: string; value: number }[]
   weekly: { week: string; count: number }[]
   channels: { name: string; value: number }[]
+}
+
+// ---- 知识库（需求 3.9，与 server/src/types.ts 保持同步） ----
+
+/** 题目分类（固定可扩充） */
+export const KNOWLEDGE_CATEGORIES = ['八股', '项目', '算法', '综合面试', '其他'] as const
+export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number]
+
+/** 掌握度：0 未掌握 / 1 模糊 / 2 已掌握 */
+export const MASTERY_LEVELS = [0, 1, 2] as const
+export type Mastery = (typeof MASTERY_LEVELS)[number]
+export const MASTERY_LABELS: Record<Mastery, string> = { 0: '未掌握', 1: '模糊', 2: '已掌握' }
+export const MASTERY_TAG_TYPES: Record<Mastery, 'danger' | 'warning' | 'success'> = {
+  0: 'danger',
+  1: 'warning',
+  2: 'success'
+}
+
+/** 面经来源：others = 别人的面经，mine = 我自己的面试 */
+export interface KnowledgeSource {
+  id: number
+  owner: 'others' | 'mine'
+  company: string
+  position: string | null
+  round: string | null
+  source_type: 'text' | 'image' | 'manual'
+  note: string | null
+  application_id: number | null
+  created_at: string
+  updated_at: string
+  /** 列表接口附带 */
+  item_count?: number
+  image_count?: number
+}
+
+export interface KnowledgeItem {
+  id: number
+  source_id: number | null
+  question: string
+  answer: string | null
+  category: KnowledgeCategory | string
+  mastery: Mastery
+  created_at: string
+  updated_at: string
+  /** 列表接口附带的来源信息 */
+  source_company?: string | null
+  source_position?: string | null
+  source_round?: string | null
+  source_owner?: 'others' | 'mine' | null
+}
+
+export interface KnowledgeImage {
+  id: number
+  source_id: number
+  filename: string
+  stored_name: string
+  created_at: string
+}
+
+/** 面经详情（GET /knowledge/sources/:id） */
+export interface KnowledgeSourceDetail extends KnowledgeSource {
+  items: KnowledgeItem[]
+  images: KnowledgeImage[]
+}
+
+/** AI 拆题候选（extract-text / extract-image 返回） */
+export interface KnowledgeCandidate {
+  question: string
+  answer?: string
+  category?: string
 }

@@ -7,8 +7,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const DATA_DIR = path.resolve(__dirname, '../../data')
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 export const REVIEWS_DIR = path.join(DATA_DIR, 'reviews')
+export const KNOWLEDGE_IMAGES_DIR = path.join(DATA_DIR, 'knowledge_images')
 
-for (const dir of [DATA_DIR, UPLOADS_DIR, REVIEWS_DIR]) {
+for (const dir of [DATA_DIR, UPLOADS_DIR, REVIEWS_DIR, KNOWLEDGE_IMAGES_DIR]) {
   mkdirSync(dir, { recursive: true })
 }
 
@@ -77,6 +78,43 @@ CREATE TABLE IF NOT EXISTS checklist_items (
   content         TEXT NOT NULL,
   done            INTEGER NOT NULL DEFAULT 0,
   sort            INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner           TEXT NOT NULL CHECK(owner IN ('others','mine')),
+  company         TEXT NOT NULL,
+  position        TEXT,
+  round           TEXT,
+  source_type     TEXT NOT NULL DEFAULT 'manual',
+  note            TEXT,
+  application_id  INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ks_owner ON knowledge_sources(owner);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id       INTEGER REFERENCES knowledge_sources(id) ON DELETE CASCADE,
+  question        TEXT NOT NULL,
+  answer          TEXT,
+  category        TEXT NOT NULL DEFAULT '其他',
+  sub_category    TEXT,
+  mastery         INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ki_source ON knowledge_items(source_id);
+CREATE INDEX IF NOT EXISTS idx_ki_category ON knowledge_items(category);
+CREATE INDEX IF NOT EXISTS idx_ki_mastery ON knowledge_items(mastery);
+
+CREATE TABLE IF NOT EXISTS knowledge_images (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id       INTEGER NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
+  filename        TEXT NOT NULL,
+  stored_name     TEXT NOT NULL,
+  created_at      TEXT NOT NULL
 );
 `)
 

@@ -155,7 +155,7 @@ function fmtDate(s: string | null): string {
           </span>
         </div>
         <div v-if="detail.jd_link" class="info-item">
-          <span class="info-label">JD 链接</span>
+          <span class="info-label">投递链接</span>
           <span class="info-value">
             <a :href="detail.jd_link" target="_blank" class="link">{{ detail.jd_link }}</a>
           </span>

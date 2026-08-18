@@ -15,6 +15,20 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
     .prepare('SELECT status, applied_at, rejected_at, channel FROM applications')
     .all() as { status: Status; applied_at: string | null; rejected_at: string | null; channel: string | null }[]
 
+  // 实际经历过各环节的投递记录数（粒度是岗位/投递，不是公司；可选环节不能按状态排位推断，否则跳过笔试直通一面的会被误算）
+  const ivRows = db
+    .prepare('SELECT application_id, round FROM interviews')
+    .all() as { application_id: number; round: string }[]
+  const stageApps = new Map<string, Set<number>>()
+  for (const r of ivRows) {
+    if (!stageApps.has(r.round)) stageApps.set(r.round, new Set())
+    stageApps.get(r.round)!.add(r.application_id)
+  }
+  const STAGE_ROUNDS = ['心理测评', '笔试', 'AI面', '一面', '二面', '三面', 'HR面']
+  const stages = STAGE_ROUNDS.map((name) => ({ name, value: stageApps.get(name)?.size ?? 0 }))
+  const etc = stageApps.get('其他')?.size
+  if (etc) stages.push({ name: '其他', value: etc })
+
   const total = apps.length
   // 已投出：状态推进过「未投递」的记录（未投递不算投递量）
   const applied = apps.filter((a) => a.status !== 'unsent' && a.applied_at)
@@ -22,13 +36,11 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
   const rejected = apps.filter((a) => a.rejected_at)
   const offers = apps.filter((a) => a.status === 'offer' && !a.rejected_at)
 
-  // 漏斗：投递 -> 笔试 -> 面试 -> 终面 -> Offer
-  const reachedTesting = applied.filter((a) => statusRank(a.status) >= statusRank('testing'))
+  // 漏斗：只放单调主干（可选环节放「各环节经历数」，避免漏斗出现中间凹陷）
   const reachedInterview = applied.filter((a) => statusRank(a.status) >= statusRank('round1'))
   const reachedFinal = applied.filter((a) => statusRank(a.status) >= statusRank('round3'))
   const funnel = [
     { name: '投递', value: applied.length },
-    { name: '笔试', value: reachedTesting.length },
     { name: '面试', value: reachedInterview.length },
     { name: '终面', value: reachedFinal.length },
     { name: 'Offer', value: offers.length + apps.filter((a) => a.status === 'offer' && a.rejected_at).length }
@@ -60,6 +72,7 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
   res.json({
     cards: { total, active: active.length, rejected: rejected.length, offer: offers.length },
     funnel,
+    stages,
     weekly,
     channels
   })

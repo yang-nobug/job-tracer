@@ -76,6 +76,13 @@ async function onChange(key: Status | 'rejected'): Promise<void> {
     const statusChanged = !wantRejected && app.status !== key
     if (!rejectChanged && !statusChanged) continue
 
+    // 从未投递拖入已投递 -> 先弹窗，顺手填投递链接（职位页/进度查询页）
+    if (!wantRejected && key === 'applied' && app.status === 'unsent') {
+      pendingApplied.value = app
+      appliedForm.jd_link = app.jd_link || ''
+      return
+    }
+
     // 拖入考核/面试子列且该环节还没有记录 -> 先弹窗补时间
     const roundLabel = ROUND_COL_KEYS.includes(key as Status) ? STATUS_LABELS[key as Status] : null
     if (!wantRejected && roundLabel && app.last_round !== roundLabel) {
@@ -136,8 +143,52 @@ function cancelInterview(): void {
   load() // 撤销拖拽造成的视觉变化
 }
 
+// 拖入已投递时补投递链接
+const pendingApplied = ref<Application | null>(null)
+const appliedForm = reactive({ jd_link: '' })
+
+async function confirmApplied(withLink: boolean): Promise<void> {
+  const app = pendingApplied.value
+  if (!app) return
+  try {
+    const link = withLink ? appliedForm.jd_link.trim() : (app.jd_link || '')
+    await api.put(`/applications/${app.id}`, { ...app, status: 'applied', jd_link: link })
+    store.dataVersion++
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+    load()
+  }
+  pendingApplied.value = null
+}
+
+function cancelApplied(): void {
+  pendingApplied.value = null
+  load() // 撤销拖拽造成的视觉变化
+}
+
 function dragDisabled(): boolean {
   return window.innerWidth <= 768
+}
+
+// 可折叠列：未投递 / 已挂（边缘池子，默认折叠省宽度）
+const COLLAPSIBLE_KEYS = ['unsent', 'rejected']
+const collapsed = reactive<Record<string, boolean>>(loadCollapsed())
+
+function loadCollapsed(): Record<string, boolean> {
+  try {
+    return { unsent: true, rejected: true, ...JSON.parse(localStorage.getItem('kanban-collapsed') || '{}') }
+  } catch {
+    return { unsent: true, rejected: true }
+  }
+}
+
+function collapsible(key: string): boolean {
+  return COLLAPSIBLE_KEYS.includes(key)
+}
+
+function toggleCollapse(key: string): void {
+  collapsed[key] = !collapsed[key]
+  localStorage.setItem('kanban-collapsed', JSON.stringify(collapsed))
 }
 
 // 拖入这些列视为一个环节，需要补时间并生成记录（考核组 + 面试组）
@@ -165,15 +216,32 @@ const GROUP_COLOR = '#f5a623'
 
 <template>
   <div class="kanban">
-    <!-- 前段：未投递 / 已投递 -->
-    <div v-for="col in columns.before" :key="col.key" class="kanban-col">
-      <div class="col-head">
-        <span class="col-title">
-          <span class="col-dot" :style="{ background: COLUMN_COLORS[col.key] }" />
-          {{ col.label }}
-        </span>
+    <!-- 前段：未投递（可折叠）/ 已投递 -->
+    <template v-for="col in columns.before" :key="col.key">
+      <div
+        v-if="collapsible(col.key) && collapsed[col.key]"
+        class="kanban-col col-collapsed"
+        :title="`点击展开「${col.label}」`"
+        @click="toggleCollapse(col.key)"
+      >
         <span class="col-count">{{ col.list.length }}</span>
+        <span class="collapsed-label">{{ col.label }}</span>
+        <span class="collapsed-arrow">»</span>
       </div>
+      <div v-else class="kanban-col">
+        <div class="col-head">
+          <span class="col-title">
+            <span class="col-dot" :style="{ background: COLUMN_COLORS[col.key] }" />
+            {{ col.label }}
+          </span>
+          <span class="col-count">{{ col.list.length }}</span>
+          <span
+            v-if="collapsible(col.key)"
+            class="fold-btn"
+            title="折叠此列"
+            @click.stop="toggleCollapse(col.key)"
+          >«</span>
+        </div>
       <draggable
         :list="col.list"
         :group="'apps'"
@@ -211,7 +279,8 @@ const GROUP_COLOR = '#f5a623'
           </div>
         </template>
       </draggable>
-    </div>
+      </div>
+    </template>
 
     <!-- 考核组：心理测评 / 笔试 / AI面 -->
     <div class="kanban-group assessment-group">
@@ -331,15 +400,32 @@ const GROUP_COLOR = '#f5a623'
       </div>
     </div>
 
-    <!-- 后段：Offer / 已挂 -->
-    <div v-for="col in columns.after" :key="col.key" class="kanban-col">
-      <div class="col-head">
-        <span class="col-title">
-          <span class="col-dot" :style="{ background: COLUMN_COLORS[col.key] }" />
-          {{ col.label }}
-        </span>
+    <!-- 后段：Offer / 已挂（可折叠） -->
+    <template v-for="col in columns.after" :key="col.key">
+      <div
+        v-if="collapsible(col.key) && collapsed[col.key]"
+        class="kanban-col col-collapsed"
+        :title="`点击展开「${col.label}」`"
+        @click="toggleCollapse(col.key)"
+      >
         <span class="col-count">{{ col.list.length }}</span>
+        <span class="collapsed-label">{{ col.label }}</span>
+        <span class="collapsed-arrow">«</span>
       </div>
+      <div v-else class="kanban-col">
+        <div class="col-head">
+          <span class="col-title">
+            <span class="col-dot" :style="{ background: COLUMN_COLORS[col.key] }" />
+            {{ col.label }}
+          </span>
+          <span class="col-count">{{ col.list.length }}</span>
+          <span
+            v-if="collapsible(col.key)"
+            class="fold-btn"
+            title="折叠此列"
+            @click.stop="toggleCollapse(col.key)"
+          >»</span>
+        </div>
       <draggable
         :list="col.list"
         :group="'apps'"
@@ -377,7 +463,30 @@ const GROUP_COLOR = '#f5a623'
           </div>
         </template>
       </draggable>
-    </div>
+      </div>
+    </template>
+
+    <!-- 拖入已投递时补投递链接 -->
+    <el-dialog
+      :model-value="!!pendingApplied"
+      title="标记为已投递"
+      width="460px"
+      append-to-body
+      destroy-on-close
+      @update:model-value="(v: boolean) => !v && cancelApplied()"
+    >
+      <div v-if="pendingApplied">
+        <p class="iv-prompt-tip">
+          「{{ pendingApplied.company }}」进入 <b>已投递</b>，顺手填上投递链接（职位页 / 进度查询页），以后点卡片上的 🔗 就能回来看进度：
+        </p>
+        <el-input v-model="appliedForm.jd_link" placeholder="https://…（可留空，稍后在编辑里补）" clearable />
+      </div>
+      <template #footer>
+        <el-button @click="cancelApplied">取消</el-button>
+        <el-button @click="confirmApplied(false)">暂不填写</el-button>
+        <el-button type="primary" @click="confirmApplied(true)">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 拖入考核/面试列时补充时间 -->
     <el-dialog
@@ -458,6 +567,24 @@ const GROUP_COLOR = '#f5a623'
   font-weight: 600; font-size: 15px; color: #3c4353;
 }
 .col-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.fold-btn {
+  color: #9aa2b1; font-size: 13px; line-height: 1; cursor: pointer;
+  padding: 2px 5px; border-radius: 4px; user-select: none;
+}
+.fold-btn:hover { color: #409eff; background: #ecf5ff; }
+/* 折叠列：窄条 + 竖排文字 + 数量角标 */
+.col-collapsed {
+  flex: 0 0 44px; min-width: 44px;
+  align-items: center; justify-content: flex-start;
+  padding: 12px 0 10px; gap: 10px; cursor: pointer;
+  transition: background 0.15s;
+}
+.col-collapsed:hover { background: #e2e8f2; }
+.collapsed-label {
+  writing-mode: vertical-rl; letter-spacing: 3px;
+  font-weight: 600; font-size: 13px; color: #3c4353;
+}
+.collapsed-arrow { color: #9aa2b1; font-size: 14px; line-height: 1; margin-top: auto; }
 .col-count {
   background: #d3d9e4; color: #59637a; border-radius: 10px;
   padding: 0 8px; font-size: 13px; font-weight: 600; line-height: 20px;

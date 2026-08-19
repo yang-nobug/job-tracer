@@ -1,6 +1,6 @@
 # job-tracer 技术实施方案
 
-> 对应需求基线 REQUIREMENTS.md v1.4 · 方案 v3（2026-08-18）
+> 对应需求基线 REQUIREMENTS.md v1.4 · 方案 v4（2026-08-19，新增录音复盘管道）
 
 ## 1. 技术栈
 
@@ -30,15 +30,19 @@ job-tracer/
 │   │   ├── db.ts             # better-sqlite3 初始化 + 建表
 │   │   ├── jd-parser.ts      # JD 正则解析
 │   │   ├── review-file.ts    # 复盘 md 模板生成/读写
+│   │   ├── oss.ts            # 阿里云 OSS 上传/签名 URL/删除（录音转写中转）
+│   │   ├── asr.ts            # 火山方舟大模型录音识别（提交任务 + 轮询）
 │   │   └── routes/
 │   │       ├── applications.ts
 │   │       ├── events.ts
 │   │       ├── interviews.ts     # 含复盘、准备清单
+│   │       ├── recordings.ts     # 录音复盘管道（上传/状态/重试/删除）
 │   │       ├── resumes.ts        # 简历上传/列表/预览
 │   │       └── stats.ts
 │   └── data/                 # 全部用户数据（gitignore）
 │       ├── job-tracer.db     # SQLite 单文件
 │       ├── uploads/          # 简历文件
+│       ├── recordings/       # 面试录音音频
 │       └── reviews/          # 面试复盘 md 文档
 └── web/
     ├── src/
@@ -181,6 +185,22 @@ CREATE TABLE knowledge_images (      -- 面经截图留底（需求 3.9.1）
   stored_name     TEXT NOT NULL,     -- 存储文件名
   created_at      TEXT NOT NULL
 );
+
+CREATE TABLE recordings (           -- 面试录音复盘管道（需求 3.9.5 学习二期）
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  interview_id      INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+  filename          TEXT NOT NULL,   -- 原始文件名
+  stored_name       TEXT NOT NULL,   -- 存储文件名（data/recordings/）
+  size              INTEGER NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'uploading',
+  -- 状态机：uploading(转传OSS) -> transcribing(转写中) -> analyzing(分析中) -> done / failed
+  transcript        TEXT,            -- ASR 转写全文（留存，复盘页可查看）
+  knowledge_source_id INTEGER REFERENCES knowledge_sources(id) ON DELETE SET NULL,  -- 自动创建的面经
+  error             TEXT,            -- 失败原因
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX idx_rec_iv ON recordings(interview_id);
 ```
 
 状态变更自动写入 `type='status'` 的 event；创建面试时自动生成复盘 md 并回填 `review_file`。
@@ -287,6 +307,33 @@ data/reviews/2026-08-20-某公司-一面.md
 
 错误约定：422 返回 `{ message }`，前端统一 toast。
 
+### 录音复盘管道（需求 3.9.5 学习二期）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/recordings` | multipart（audio + interview_id）。本地有 ffmpeg 时自动把 m4a/aac/webm 转成 mp3 单声道；建记录后**异步**启动管道并立即返回 |
+| GET | `/recordings` | 列表（join 面试/投递信息，按上传时间倒序） |
+| GET | `/recordings/:id` | 单条状态详情（前端轮询用；含转写全文） |
+| POST | `/recordings/:id/retry` | 失败重试：有转写全文则从分析阶段续跑，否则整条重跑 |
+| DELETE | `/recordings/:id` | 删记录 + 本地音频文件（已生成的复盘 md 和面经保留） |
+
+**后台管道**（服务端内存态任务，不阻塞 HTTP）：
+
+```
+本地音频 -> (ffmpeg 可选转码) -> 传阿里云 OSS 私有桶 -> 生成 1 小时签名 URL
+  -> 提交方舟大模型录音识别标准版（audio.url = 签名 URL）
+  -> 轮询查询（10s 间隔，上限 30 分钟；20000001/2=处理中，20000000=完成）
+  -> 删除 OSS 临时文件 -> 转写全文入库
+  -> 大模型分析（复盘 md + 题目列表）
+  -> writeReviewFile 覆盖该面试的复盘 md（复盘只来源于录音）
+  -> 自动创建面经（owner=mine, source_type=audio, 关联 application_id）+ 题目批量入库
+```
+
+- ASR 接口：`POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit` / `query`；`X-Api-Resource-Id: volc.seedasr.auc`（2.0）；`X-Api-Request-Id` 为 UUID 任务号；音频 ≤512MB，支持 raw/wav/mp3/ogg；开启 `enable_itn` + `enable_punc` + `enable_ddc`
+- 鉴权两种模式兼容：新版控制台 `X-Api-Key` 单 key；旧版 `X-Api-App-Key + X-Api-Access-Key`
+- 分析提示词外置 `prompts/recording-analysis.system.md`：输入转写全文 + 公司/岗位/轮次；输出用分隔符格式（沿用生成答案的防转义经验）：`@@@REVIEW@@@` 包 markdown 复盘（沿用被问的问题/自我评价/改进点结构）+ `@@@QUESTIONS@@@` 包题目 JSON 数组（question/answer=我当时回答的要点/category）
+- config.json 新增两段（照旧 gitignore）：`asr: { apiKey? , appId?+accessToken?, resourceId }`、`oss: { accessKeyId, accessKeySecret, bucket, region }`；缺配置时接口返回明确错误
+
 ## 5. 页面与交互要点
 
 - **布局（双工作区，需求 3.10）**：顶部居中分段切换器「投递跟踪 / 学习成长」，记忆上次停留（localStorage）；投递跟踪 = 看板/列表/统计 + 面试倒计时条 + 「+ 新增投递」；学习成长 = 复盘/学习 + 「+ 录入面经」；路由分组 `/track/...` `/learn/...`，旧路由重定向；移动端顶部切换器
@@ -294,7 +341,7 @@ data/reviews/2026-08-20-某公司-一面.md
 - **列表**：表格（移动端变卡片）+ 范围（进行中/全部/已挂）+ 状态/渠道/关键词筛选 + 排序；整行点开详情；行内操作
 - **录入弹窗**：必填仅公司+职位；公司自动补全带默认值；渠道默认官网；JD 解析按钮（本地正则 + AI）-> 回填可改；ResumePicker 内联选简历/上传
 - **详情弹窗**：字段 + JD 正文 + 时间线（含面试事件）；InterviewPanel 管理日程、勾选清单、打开 ReviewEditor（左编辑右预览，markdown-it 渲染）
-- **复盘页**：全部复盘文档列表（公司/轮次/时间），点开即 ReviewEditor
+- **复盘页**：全部复盘文档列表（公司/轮次/时间），点开即 ReviewEditor；顶部「⬆ 上传录音」弹窗（选面试记录 + 拖入音频文件，格式校验 mp3/wav/ogg/m4a/aac/webm）；上传后卡片实时显示状态徽标（转写中/分析中/完成/失败+重试），完成后复盘 md 与面经自动就绪；面试卡片可展开查看转写全文
 - **简历预览**：PDF 用 `<iframe>` 直读 `/api/resumes/:id/file`；Word 提示下载
 - **统计**：漏斗/环节条形/周趋势/饼图 2x2 + 数字卡片，空数据给引导；移动端单列堆叠
 - **学习页（需求 3.9.3）**：顶部「他人面经 / 我的面试」切换；双视图：按题目（列表+分类/掌握度/关键词筛选，答案默认收起点击展开）/ 按面经（面经卡片展开题目）；录入流程：粘贴文本或传截图（≤9 张）-> AI 候选列表（可改分类、默认全选）-> 勾选入库 -> 对无答案条目批量「生成答案」；掌握度一键三档切换
@@ -329,6 +376,7 @@ npm start
 12. 知识库 AI：提示词三件套 -> extract-text / extract-image / generate-answers / tutor 接口；先实测视觉模型支持
 13. 学习页前端：双视图 + 录入流程（文本/截图候选列表）+ 掌握度交互
 14. AI 助教抽屉
+15. 录音复盘管道：recordings 建表 -> oss.ts / asr.ts 封装 -> recordings 路由（上传/异步管道/轮询/重试）-> 分析提示词 -> 复盘页上传弹窗与状态展示
 
 每步本地自测通过再进下一步。
 
@@ -353,7 +401,11 @@ npm start
 | 长截图/口语化面经识别质量差 | 提示词外置可随时迭代；识别失败明确提示不静默丢弃 |
 | tutor 上下文过长超 token 限制 | 知识库检索只注入 top-N（默认 5）相关条目，按问题+答案关键词 LIKE 匹配 |
 | 批量生成答案耗时长 | 前端按钮 loading + 逐条生成进度提示；单批上限 20 条 |
+| 录音是 m4a/aac 等不支持的格式且机器未装 ffmpeg | 上传接口明确报错提示安装 ffmpeg 或自行转成 mp3；检测到 ffmpeg 则服务端自动转码 |
+| OSS / ASR 未配置或欠费 | 各阶段失败原因落库（recordings.error），失败可一键重试，不静默丢弃 |
+| 长录音转写耗时数分钟 | 后台异步任务 + 前端 3s 轮询状态；服务重启丢内存态任务则靠「重试」恢复 |
+| 复盘 md 被 AI 结果覆盖 | 产品约定：复盘只来源于录音，覆盖即预期；转写全文与生成的复盘均在 recordings 留底 |
 
 ## 10. 后续可扩展（对应需求文档第 6 节，本期不做）
 
-跟进提醒、周待办、拒绝原因统计、深度转化分析、公司信息库、意愿度、薪资字段、Offer 对比、CSV 导出、PWA、浏览器插件；学习二期（录音 ASR 管道、复习抽测、间隔复习、高频题统计、去重筛选视图、二级分类细化）。
+跟进提醒、周待办、拒绝原因统计、深度转化分析、公司信息库、意愿度、薪资字段、Offer 对比、CSV 导出、PWA、浏览器插件；学习二期剩余（复习抽测、间隔复习、高频题统计、去重筛选视图、二级分类细化）。

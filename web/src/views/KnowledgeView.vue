@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
@@ -7,13 +8,13 @@ import { store } from '../store'
 import {
   KNOWLEDGE_CATEGORIES,
   MASTERY_LABELS,
-  MASTERY_TAG_TYPES,
   type KnowledgeItem,
   type KnowledgeSource,
   type Mastery
 } from '../types'
-import SourceDetailDialog from '../components/SourceDetailDialog.vue'
+import { generateAnswersChunked } from '../utils/answers'
 
+const router = useRouter()
 const md = new MarkdownIt()
 
 // ---- 视图状态 ----
@@ -27,25 +28,36 @@ const loading = ref(false)
 const items = ref<KnowledgeItem[]>([])
 const sources = ref<KnowledgeSource[]>([])
 const expanded = ref<Set<number>>(new Set())
-const detailId = ref<number | null>(null)
 const selected = ref<Set<number>>(new Set())
 const generating = ref(false)
+const genProgress = ref<{ done: number; total: number } | null>(null)
 
-// 统计摘要
-const summary = computed(() => ({
-  total: items.value.length,
-  weak: items.value.filter((i) => i.mastery === 0).length,
-  noAnswer: items.value.filter((i) => !i.answer || !i.answer.trim()).length
-}))
-
+// 掌握度筛选在前端做（统计卡点击切换），请求不带 mastery 参数
 const itemsQuery = computed(() => {
   const p = new URLSearchParams()
   if (owner.value !== 'all') p.set('owner', owner.value)
   if (category.value) p.set('category', category.value)
-  if (masteryFilter.value !== '') p.set('mastery', String(masteryFilter.value))
   if (keyword.value.trim()) p.set('keyword', keyword.value.trim())
   return p.toString()
 })
+
+const displayedItems = computed(() =>
+  masteryFilter.value === '' ? items.value : items.value.filter((i) => i.mastery === masteryFilter.value)
+)
+
+// 统计卡：全部 / 未掌握 / 模糊 / 已掌握（点击切换筛选）
+const masteryStats = computed(() => {
+  const s = [0, 0, 0]
+  for (const i of items.value) s[i.mastery as Mastery]++
+  return s
+})
+
+const statsCards = computed(() => [
+  { label: '全部题目', value: items.value.length, key: '' as number | '' },
+  { label: '未掌握', value: masteryStats.value[0], key: 0 as number | '' },
+  { label: '模糊', value: masteryStats.value[1], key: 1 as number | '' },
+  { label: '已掌握', value: masteryStats.value[2], key: 2 as number | '' }
+])
 
 async function load(): Promise<void> {
   loading.value = true
@@ -66,7 +78,7 @@ async function load(): Promise<void> {
 }
 
 onMounted(load)
-watch([viewMode, owner, category, masteryFilter, keyword], () => {
+watch([viewMode, owner, category, keyword], () => {
   selected.value = new Set()
   load()
 })
@@ -74,6 +86,10 @@ watch(
   () => store.knowledgeVersion,
   load
 )
+
+function toggleMasteryFilter(key: number | ''): void {
+  masteryFilter.value = masteryFilter.value === key ? '' : key
+}
 
 // ---- 按题目视图 ----
 function toggleExpand(id: number): void {
@@ -91,7 +107,7 @@ function toggleSelect(id: number): void {
 }
 
 const unansweredSelected = computed(
-  () => items.value.filter((i) => selected.value.has(i.id) && !i.answer?.trim()).length
+  () => displayedItems.value.filter((i) => selected.value.has(i.id) && !i.answer?.trim()).length
 )
 
 async function setMastery(item: KnowledgeItem, mastery: Mastery): Promise<void> {
@@ -106,9 +122,12 @@ async function setMastery(item: KnowledgeItem, mastery: Mastery): Promise<void> 
 async function generateAnswers(ids: number[]): Promise<void> {
   if (!ids.length) return
   generating.value = true
+  genProgress.value = { done: 0, total: ids.length }
   try {
-    const r = await api.post<{ items: KnowledgeItem[] }>('/ai/knowledge/generate-answers', { ids })
-    for (const updated of r.items) {
+    const updatedItems = await generateAnswersChunked(ids, (done, total) => {
+      genProgress.value = { done, total }
+    })
+    for (const updated of updatedItems) {
       const item = items.value.find((i) => i.id === updated.id)
       if (item) {
         item.answer = updated.answer
@@ -116,11 +135,14 @@ async function generateAnswers(ids: number[]): Promise<void> {
         expanded.value = new Set([...expanded.value, updated.id])
       }
     }
-    ElMessage.success(`已生成 ${r.items.filter((i) => i.answer).length} 条答案`)
+    ElMessage.success(`已生成 ${updatedItems.filter((i) => i.answer?.trim()).length} 条答案`)
   } catch (err) {
+    // 分批生成中途失败：已完成的批次已落库，重新拉取就能看到
     ElMessage.error((err as Error).message)
+    load()
   } finally {
     generating.value = false
+    genProgress.value = null
   }
 }
 
@@ -136,19 +158,19 @@ async function removeItem(item: KnowledgeItem): Promise<void> {
 }
 
 function openSource(sourceId: number | null): void {
-  if (sourceId) detailId.value = sourceId
+  if (sourceId) router.push(`/learn/knowledge/${sourceId}`)
 }
 </script>
 
 <template>
-  <div class="knowledge-view">
+  <div class="kb-view">
     <!-- 工具栏 -->
     <div class="kb-toolbar">
-      <el-radio-group v-model="viewMode" size="small">
+      <el-radio-group v-model="viewMode" size="default">
         <el-radio-button value="items">按题目</el-radio-button>
         <el-radio-button value="sources">按面经</el-radio-button>
       </el-radio-group>
-      <el-radio-group v-model="owner" size="small">
+      <el-radio-group v-model="owner" size="default">
         <el-radio-button value="all">全部</el-radio-button>
         <el-radio-button value="others">他人面经</el-radio-button>
         <el-radio-button value="mine">我的面试</el-radio-button>
@@ -157,42 +179,44 @@ function openSource(sourceId: number | null): void {
         v-model="keyword"
         placeholder="搜问题 / 答案 / 公司"
         clearable
-        size="small"
-        style="width: 200px"
+        style="width: 210px"
       />
-      <template v-if="viewMode === 'items'">
-        <el-select v-model="category" placeholder="分类" clearable size="small" style="width: 110px">
-          <el-option v-for="c in KNOWLEDGE_CATEGORIES" :key="c" :value="c" :label="c" />
-        </el-select>
-        <el-select v-model="masteryFilter" placeholder="掌握度" clearable size="small" style="width: 110px">
-          <el-option :value="0" label="未掌握" />
-          <el-option :value="1" label="模糊" />
-          <el-option :value="2" label="已掌握" />
-        </el-select>
-      </template>
-      <span class="kb-summary">
-        {{ summary.total }} 题 · <span class="weak">{{ summary.weak }} 未掌握</span> · {{ summary.noAnswer }} 缺答案
-      </span>
+      <el-select v-if="viewMode === 'items'" v-model="category" placeholder="分类" clearable style="width: 110px">
+        <el-option v-for="c in KNOWLEDGE_CATEGORIES" :key="c" :value="c" :label="c" />
+      </el-select>
       <span class="kb-spacer" />
       <el-button
         v-if="viewMode === 'items'"
-        size="small"
         type="warning"
         plain
         :loading="generating"
         :disabled="!unansweredSelected"
-        @click="generateAnswers(items.filter((i) => selected.has(i.id) && !i.answer?.trim()).map((i) => i.id))"
+        @click="generateAnswers(displayedItems.filter((i) => selected.has(i.id) && !i.answer?.trim()).map((i) => i.id))"
       >
-        ✨ 生成答案（{{ unansweredSelected }}）
+        {{ genProgress ? `生成中 ${genProgress.done}/${genProgress.total}…` : `✨ 生成答案（${unansweredSelected}）` }}
       </el-button>
     </div>
 
-    <div v-loading="loading">
+    <div v-loading="loading" class="kb-body">
       <!-- 按题目 -->
       <template v-if="viewMode === 'items'">
-        <el-empty v-if="!items.length && !loading" description="还没有题目，点右上角「录入面经」开始" />
+        <!-- 掌握度统计卡（点击筛选） -->
+        <div class="kb-stats">
+          <div
+            v-for="card in statsCards"
+            :key="String(card.key)"
+            class="kb-stat-card"
+            :class="[{ active: masteryFilter === card.key }, 'stat-' + card.key]"
+            @click="toggleMasteryFilter(card.key)"
+          >
+            <div class="kb-stat-value">{{ card.value }}</div>
+            <div class="kb-stat-label">{{ card.label }}</div>
+          </div>
+        </div>
+
+        <el-empty v-if="!displayedItems.length && !loading" description="没有题目，点右上角「录入面经」开始" />
         <div v-else class="kb-items">
-          <div v-for="item in items" :key="item.id" class="kb-item">
+          <div v-for="item in displayedItems" :key="item.id" class="kb-item">
             <el-checkbox
               :model-value="selected.has(item.id)"
               class="kb-check"
@@ -200,34 +224,35 @@ function openSource(sourceId: number | null): void {
             />
             <div class="kb-item-body">
               <div class="kb-item-head" @click="toggleExpand(item.id)">
-                <el-tag size="small" effect="plain">{{ item.category }}</el-tag>
+                <el-tag size="small" effect="light" round class="kb-cat">{{ item.category }}</el-tag>
                 <span class="kb-question">{{ item.question }}</span>
-                <span class="kb-spacer" />
-                <span v-if="item.source_company" class="kb-source" @click.stop="openSource(item.source_id)">
-                  {{ item.source_company }}<template v-if="item.source_round"> · {{ item.source_round }}</template>
-                  <el-tag v-if="item.source_owner === 'mine'" size="small" type="primary">我的</el-tag>
-                </span>
-                <el-tag
-                  size="small"
-                  :type="MASTERY_TAG_TYPES[item.mastery as Mastery]"
-                  style="cursor: pointer"
+                <span
+                  class="mastery-pill"
+                  :class="'m-' + item.mastery"
                   title="点击切换掌握度"
                   @click.stop="setMastery(item, (((item.mastery as Mastery) + 1) % 3) as Mastery)"
                 >
                   {{ MASTERY_LABELS[item.mastery as Mastery] }}
-                </el-tag>
-                <el-tag v-if="!item.answer" size="small" type="info">无答案</el-tag>
-                <el-button v-else-if="!item.answer.trim()" size="small" link type="warning" @click.stop="generateAnswers([item.id])">
+                </span>
+                <el-tag v-if="!item.answer" size="small" type="info" effect="plain" round>无答案</el-tag>
+                <el-button
+                  v-else-if="!item.answer.trim()"
+                  size="small" link type="warning"
+                  @click.stop="generateAnswers([item.id])"
+                >
                   ✨ 生成
                 </el-button>
                 <el-button link type="danger" size="small" @click.stop="removeItem(item)">删</el-button>
+                <span class="kb-toggle">{{ expanded.has(item.id) ? '▲' : '▼' }}</span>
               </div>
-              <div
-                v-if="expanded.has(item.id) && item.answer"
-                class="kb-answer md-body"
-                v-html="md.render(item.answer)"
-              />
-              <div v-else-if="expanded.has(item.id)" class="kb-answer kb-noanswer">还没有答案</div>
+              <div v-if="expanded.has(item.id)" class="kb-answer">
+                <div v-if="item.answer" class="md-body" v-html="md.render(item.answer)" />
+                <div v-else class="kb-noanswer">还没有答案，勾选后点「生成答案」补齐</div>
+              </div>
+              <div v-if="item.source_company" class="kb-source" @click.stop="openSource(item.source_id)">
+                📎 {{ item.source_company }}<template v-if="item.source_round"> · {{ item.source_round }}</template>
+                <el-tag v-if="item.source_owner === 'mine'" size="small" type="primary" effect="plain" round>我的</el-tag>
+              </div>
             </div>
           </div>
         </div>
@@ -237,63 +262,102 @@ function openSource(sourceId: number | null): void {
       <template v-else>
         <el-empty v-if="!sources.length && !loading" description="还没有面经，点右上角「录入面经」开始" />
         <div v-else class="kb-sources">
-          <el-card
-            v-for="src in sources"
-            :key="src.id"
-            shadow="never"
-            class="kb-source-card"
-            @click="detailId = src.id"
-          >
+          <div v-for="src in sources" :key="src.id" class="kb-source-card" @click="openSource(src.id)">
             <div class="kb-src-row">
               <span class="kb-src-company">{{ src.company }}</span>
-              <el-tag v-if="src.owner === 'mine'" type="primary" size="small">我的</el-tag>
-              <el-tag v-else type="info" size="small">他人</el-tag>
-              <el-tag v-if="src.round" size="small" effect="plain">{{ src.round }}</el-tag>
-              <span class="kb-spacer" />
-              <span class="kb-src-count">{{ src.item_count }} 题 · {{ src.image_count }} 图</span>
+              <el-tag v-if="src.owner === 'mine'" type="primary" effect="dark" size="small" round>我的</el-tag>
+              <el-tag v-else type="info" effect="plain" size="small" round>他人</el-tag>
+              <el-tag v-if="src.round" size="small" effect="light" round>{{ src.round }}</el-tag>
             </div>
             <div class="kb-src-sub">
               <span v-if="src.position">{{ src.position }}</span>
               <span v-if="src.note" class="kb-src-note">{{ src.note }}</span>
+            </div>
+            <div class="kb-src-foot">
+              <span class="kb-src-count">{{ src.item_count }} 题 · {{ src.image_count }} 图</span>
               <span class="kb-src-date">{{ src.created_at?.slice(0, 10) }}</span>
             </div>
-          </el-card>
+          </div>
         </div>
       </template>
     </div>
-
-    <SourceDetailDialog :source-id="detailId" @close="detailId = null" @changed="load" />
   </div>
 </template>
 
 <style scoped>
-.knowledge-view { max-width: 1100px; }
-.kb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.kb-summary { font-size: 13px; color: #606266; }
-.kb-summary .weak { color: #f56c6c; }
+.kb-view { max-width: 1000px; }
+.kb-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .kb-spacer { flex: 1; }
+.kb-body { min-height: 300px; }
 
-.kb-items { display: flex; flex-direction: column; gap: 8px; }
-.kb-item { display: flex; gap: 10px; border: 1px solid #ebeef5; border-radius: 6px; padding: 10px 12px; background: #fff; }
+/* 掌握度统计卡 */
+.kb-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.kb-stat-card {
+  background: #fff; border: 1px solid #ebeef5; border-radius: 10px;
+  padding: 14px 18px; cursor: pointer; text-align: center;
+  transition: all 0.2s;
+}
+.kb-stat-card:hover { box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
+.kb-stat-value { font-size: 26px; font-weight: 700; color: #303133; line-height: 1.2; }
+.kb-stat-label { font-size: 13px; color: #909399; margin-top: 2px; }
+.kb-stat-card.stat-0 .kb-stat-value { color: #f56c6c; }
+.kb-stat-card.stat-1 .kb-stat-value { color: #e6a23c; }
+.kb-stat-card.stat-2 .kb-stat-value { color: #67c23a; }
+.kb-stat-card.active { border-color: #409eff; box-shadow: 0 0 0 1px #409eff inset; }
+
+/* 题目卡片 */
+.kb-items { display: flex; flex-direction: column; gap: 10px; }
+.kb-item {
+  display: flex; gap: 12px; background: #fff; border: 1px solid #ebeef5;
+  border-radius: 10px; padding: 14px 18px; transition: box-shadow 0.2s;
+}
+.kb-item:hover { box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
 .kb-item-body { flex: 1; min-width: 0; }
-.kb-item-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.kb-question { font-size: 14px; flex: 0 1 auto; }
-.kb-source { font-size: 12px; color: #909399; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.kb-item-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.kb-cat { flex-shrink: 0; }
+.kb-question { font-size: 15px; flex: 1; line-height: 1.6; }
+.kb-toggle { color: #c0c4cc; font-size: 11px; }
+.kb-answer { margin-top: 12px; border-top: 1px dashed #ebeef5; padding-top: 12px; }
+.kb-noanswer { color: #909399; font-size: 13px; }
+.kb-source {
+  margin-top: 8px; font-size: 12px; color: #a8abb2; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+}
 .kb-source:hover { color: #409eff; }
-.kb-answer { margin-top: 8px; border-top: 1px dashed #ebeef5; padding-top: 8px; font-size: 13px; line-height: 1.7; }
-.kb-noanswer { color: #909399; }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 15px; margin: 10px 0 6px; }
+.md-body { font-size: 14px; line-height: 1.8; }
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 16px; margin: 12px 0 6px; }
 .md-body :deep(ul) { padding-left: 20px; }
-.md-body :deep(pre) { background: #f4f6fa; padding: 8px; border-radius: 4px; overflow: auto; }
-.md-body :deep(code) { font-size: 12px; }
+.md-body :deep(pre) { background: #f6f8fa; padding: 10px; border-radius: 6px; overflow: auto; }
+.md-body :deep(code) { font-size: 13px; }
 
-.kb-sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
-.kb-source-card { cursor: pointer; }
-.kb-source-card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
-.kb-src-row { display: flex; align-items: center; gap: 8px; }
-.kb-src-company { font-weight: 600; font-size: 15px; }
-.kb-src-count { font-size: 12px; color: #909399; white-space: nowrap; }
-.kb-src-sub { margin-top: 4px; display: flex; gap: 10px; color: #606266; font-size: 13px; }
+/* 掌握度胶囊：红/黄/绿 */
+.mastery-pill {
+  flex-shrink: 0; cursor: pointer; user-select: none;
+  font-size: 12px; padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+  transition: transform 0.15s;
+}
+.mastery-pill:hover { transform: scale(1.06); }
+.m-0 { background: #fef0f0; color: #f56c6c; }
+.m-1 { background: #fdf6ec; color: #e6a23c; }
+.m-2 { background: #f0f9eb; color: #67c23a; }
+
+/* 面经卡片 */
+.kb-sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.kb-source-card {
+  background: #fff; border: 1px solid #ebeef5; border-radius: 10px;
+  padding: 16px 18px; cursor: pointer; transition: all 0.2s;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kb-source-card:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08); transform: translateY(-1px); }
+.kb-src-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kb-src-company { font-weight: 600; font-size: 16px; }
+.kb-src-sub { display: flex; gap: 10px; color: #606266; font-size: 13px; flex-wrap: wrap; }
 .kb-src-note { color: #909399; }
-.kb-src-date { margin-left: auto; color: #c0c4cc; font-size: 12px; }
+.kb-src-foot { display: flex; justify-content: space-between; align-items: center; }
+.kb-src-count { font-size: 13px; color: #606266; }
+.kb-src-date { color: #c0c4cc; font-size: 12px; }
+
+@media (max-width: 768px) {
+  .kb-stats { grid-template-columns: repeat(2, 1fr); }
+}
 </style>

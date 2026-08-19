@@ -12,7 +12,8 @@ import { KNOWLEDGE_CATEGORIES } from '../types.js'
 export const knowledgeAiRouter = Router()
 
 const EXTRACT_MAX_TEXT = 10_000
-const ANSWER_BATCH_LIMIT = 20
+// 单批上限：一次塞太多题目，答案质量会明显下降（前端会分批调用）
+const ANSWER_BATCH_LIMIT = 5
 const TUTOR_CONTEXT_TOP_N = 5
 
 interface CandidateQuestion {
@@ -42,7 +43,17 @@ function normalizeQuestions(raw: unknown): CandidateQuestion[] {
   return out
 }
 
-// 文本面经 -> 候选题目列表
+/** 规整模型拆出的元信息（company/position/round） */
+function normalizeMeta(raw: { company?: unknown; position?: unknown; round?: unknown }) {
+  const clean = (v: unknown, max = 100) => String(v ?? '').trim().slice(0, max)
+  return {
+    company: clean(raw.company),
+    position: clean(raw.position),
+    round: clean(raw.round, 20)
+  }
+}
+
+// 文本面经 -> 元信息 + 候选题目列表
 knowledgeAiRouter.post('/ai/knowledge/extract-text', async (req: Request, res: Response) => {
   const text = (req.body?.text ?? '').trim()
   if (!text) {
@@ -54,9 +65,10 @@ knowledgeAiRouter.post('/ai/knowledge/extract-text', async (req: Request, res: R
       { role: 'system', content: loadPrompt('knowledge-extract.system.md') },
       { role: 'user', content: text.slice(0, EXTRACT_MAX_TEXT) }
     ])
-    const parsed = extractJson<{ questions?: unknown }>(output)
-    res.json({ questions: normalizeQuestions(parsed.questions) })
+    const parsed = extractJson<{ company?: unknown; position?: unknown; round?: unknown; questions?: unknown }>(output)
+    res.json({ ...normalizeMeta(parsed), questions: normalizeQuestions(parsed.questions) })
   } catch (err) {
+    console.error('[extract-text]', (err as Error).message)
     res.status(502).json({ message: (err as Error).message })
   }
 })
@@ -99,9 +111,10 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
       ],
       90_000
     )
-    const parsed = extractJson<{ questions?: unknown }>(output)
-    res.json({ questions: normalizeQuestions(parsed.questions) })
+    const parsed = extractJson<{ company?: unknown; position?: unknown; round?: unknown; questions?: unknown }>(output)
+    res.json({ ...normalizeMeta(parsed), questions: normalizeQuestions(parsed.questions) })
   } catch (err) {
+    console.error('[extract-image]', (err as Error).message)
     res.status(502).json({ message: (err as Error).message })
   }
 })
@@ -136,13 +149,10 @@ knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, re
       ],
       180_000
     )
-    const parsed = extractJson<{ answers?: { id?: unknown; answer?: unknown }[] }>(output)
-    const answers = Array.isArray(parsed.answers) ? parsed.answers : []
-    const byId = new Map<number, string>()
-    for (const a of answers) {
-      const id = Number(a?.id)
-      const answer = String(a?.answer ?? '').trim()
-      if (id && answer) byId.set(id, answer)
+    // 答案是 markdown，塞 JSON 里模型很容易转义出错，改用 @@@ID:x@@@ 分隔符解析
+    const byId = parseAnswerBlocks(output)
+    if (byId.size === 0) {
+      throw new Error('模型没有按格式返回答案，请重试')
     }
     const update = db.prepare('UPDATE knowledge_items SET answer=?, updated_at=? WHERE id=?')
     const ts = now()
@@ -158,9 +168,22 @@ knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, re
       .all(...ids)
     res.json({ items: refreshed, generated: byId.size })
   } catch (err) {
+    console.error('[generate-answers]', (err as Error).message)
     res.status(502).json({ message: (err as Error).message })
   }
 })
+
+/** 解析模型输出的 @@@ID:x@@@ 答案块，容忍格式瑕疵 */
+function parseAnswerBlocks(output: string): Map<number, string> {
+  const byId = new Map<number, string>()
+  const re = /@@@ID[:：]?\s*(\d+)\s*@@@([\s\S]*?)(?=@@@ID[:：]?\s*\d+\s*@@@|$)/g
+  for (const m of output.matchAll(re)) {
+    const id = Number(m[1])
+    const answer = m[2].trim()
+    if (id && answer) byId.set(id, answer)
+  }
+  return byId
+}
 
 // 助教对话：按最后一条用户消息检索知识库 top-N 注入上下文
 knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response) => {
@@ -216,6 +239,7 @@ knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response
     )
     res.json({ reply, contextCount: context.length })
   } catch (err) {
+    console.error('[tutor]', (err as Error).message)
     res.status(502).json({ message: (err as Error).message })
   }
 })

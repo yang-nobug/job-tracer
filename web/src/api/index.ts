@@ -44,5 +44,17 @@ export const api = {
       if (!res.ok) throw new Error((body as { message?: string }).message || '上传失败')
       return body
     })
+  },
+
+  // 上传面试录音（multipart，触发转写+复盘管道）
+  uploadRecording: (interviewId: number, file: File) => {
+    const form = new FormData()
+    form.append('interview_id', String(interviewId))
+    form.append('audio', file)
+    return fetch(`${BASE}/recordings`, { method: 'POST', body: form }).then(async (res) => {
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((body as { message?: string }).message || '上传失败')
+      return body
+    })
   }
 }

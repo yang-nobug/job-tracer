@@ -46,10 +46,24 @@ onUnmounted(() => {
     <header class="header">
       <div class="header-inner">
         <div class="brand">📋 job-tracer</div>
-        <el-radio-group :model-value="workspace" size="small" class="ws-switch" @update:model-value="onWorkspaceChange">
-          <el-radio-button value="track">投递跟踪</el-radio-button>
-          <el-radio-button value="learn">学习成长</el-radio-button>
-        </el-radio-group>
+        <div class="ws-switch">
+          <div
+            class="ws-pill"
+            :class="{ active: workspace === 'track' }"
+            role="tab"
+            @click="onWorkspaceChange('track')"
+          >
+            投递
+          </div>
+          <div
+            class="ws-pill"
+            :class="{ active: workspace === 'learn' }"
+            role="tab"
+            @click="onWorkspaceChange('learn')"
+          >
+            学习
+          </div>
+        </div>
         <nav class="nav-desktop">
           <template v-if="workspace === 'track'">
             <router-link to="/track/kanban" class="nav-link" :class="{ active: route.path === '/track/kanban' }">看板</router-link>
@@ -58,7 +72,7 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <router-link to="/learn/reviews" class="nav-link" :class="{ active: route.path === '/learn/reviews' }">复盘</router-link>
-            <router-link to="/learn/knowledge" class="nav-link" :class="{ active: route.path === '/learn/knowledge' }">学习</router-link>
+            <router-link to="/learn/knowledge" class="nav-link" :class="{ active: route.path.startsWith('/learn/knowledge') }">学习</router-link>
           </template>
         </nav>
         <el-button v-if="workspace === 'track'" type="primary" round @click="openCreateForm()">+ 新增投递</el-button>
@@ -108,7 +122,22 @@ body {
   display: flex; align-items: center; gap: 20px; height: 56px;
 }
 .brand { font-weight: 700; font-size: 18px; white-space: nowrap; }
-.ws-switch { flex-shrink: 0; }
+/* 工作区切换器：胶囊底 + 选中白底浮起 */
+.ws-switch {
+  display: flex; gap: 4px; padding: 4px; flex-shrink: 0;
+  background: #e9edf3; border-radius: 999px;
+}
+.ws-pill {
+  padding: 7px 26px; border-radius: 999px;
+  font-size: 15px; font-weight: 600; color: #909399;
+  cursor: pointer; user-select: none; white-space: nowrap;
+  transition: color 0.2s, background 0.2s, box-shadow 0.2s;
+}
+.ws-pill:hover { color: #606266; }
+.ws-pill.active {
+  background: #fff; color: #1f2d3d;
+  box-shadow: 0 2px 8px rgba(31, 45, 61, 0.16);
+}
 .nav-desktop { display: flex; gap: 4px; flex: 1; }
 .nav-link {
   text-decoration: none; color: #606266; padding: 6px 14px; border-radius: 6px; font-size: 15px;

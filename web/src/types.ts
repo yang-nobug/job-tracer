@@ -185,3 +185,54 @@ export interface KnowledgeCandidate {
   answer?: string
   category?: string
 }
+
+/** AI 识别结果：面经元信息（可空串）+ 候选题目 */
+export interface KnowledgeExtraction {
+  company: string
+  position: string
+  round: string
+  questions: KnowledgeCandidate[]
+}
+
+// ---------- 录音复盘管道 ----------
+
+export type RecordingStatus = 'uploading' | 'transcribing' | 'analyzing' | 'done' | 'failed'
+
+export const RECORDING_STATUS_LABELS: Record<RecordingStatus, string> = {
+  uploading: '转传中',
+  transcribing: '转写中',
+  analyzing: '分析中',
+  done: '已完成',
+  failed: '失败'
+}
+
+export const RECORDING_STATUS_TAG_TYPES: Record<RecordingStatus, 'info' | 'warning' | 'primary' | 'success' | 'danger'> = {
+  uploading: 'info',
+  transcribing: 'warning',
+  analyzing: 'warning',
+  done: 'success',
+  failed: 'danger'
+}
+
+/** 录音列表行（join 面试/投递信息） */
+export interface RecordingRow {
+  id: number
+  interview_id: number
+  filename: string
+  size: number
+  status: RecordingStatus
+  error: string | null
+  knowledge_source_id: number | null
+  created_at: string
+  updated_at: string
+  round: string
+  scheduled_at: string
+  company: string
+  position: string | null
+  has_transcript: 0 | 1
+}
+
+/** 录音详情（含转写全文） */
+export interface RecordingDetail extends RecordingRow {
+  transcript: string | null
+}

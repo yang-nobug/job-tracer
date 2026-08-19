@@ -9,6 +9,7 @@ import ListView from './views/ListView.vue'
 import StatsView from './views/StatsView.vue'
 import ReviewsView from './views/ReviewsView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
+import SourceDetailView from './views/SourceDetailView.vue'
 
 // 双工作区（需求 3.10）：投递跟踪 /track/*，学习成长 /learn/*
 const router = createRouter({
@@ -23,6 +24,8 @@ const router = createRouter({
     // 学习成长
     { path: '/learn/reviews', component: ReviewsView },
     { path: '/learn/knowledge', component: KnowledgeView },
+    // 面经详情独立页（整页浏览，不再用抽屉）
+    { path: '/learn/knowledge/:id', component: SourceDetailView },
     // 旧路由重定向（收藏链接不失效）
     { path: '/kanban', redirect: '/track/kanban' },
     { path: '/list', redirect: '/track/list' },

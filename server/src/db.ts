@@ -8,8 +8,9 @@ export const DATA_DIR = path.resolve(__dirname, '../../data')
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 export const REVIEWS_DIR = path.join(DATA_DIR, 'reviews')
 export const KNOWLEDGE_IMAGES_DIR = path.join(DATA_DIR, 'knowledge_images')
+export const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings')
 
-for (const dir of [DATA_DIR, UPLOADS_DIR, REVIEWS_DIR, KNOWLEDGE_IMAGES_DIR]) {
+for (const dir of [DATA_DIR, UPLOADS_DIR, REVIEWS_DIR, KNOWLEDGE_IMAGES_DIR, RECORDINGS_DIR]) {
   mkdirSync(dir, { recursive: true })
 }
 
@@ -116,6 +117,22 @@ CREATE TABLE IF NOT EXISTS knowledge_images (
   stored_name     TEXT NOT NULL,
   created_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recordings (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  interview_id      INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+  filename          TEXT NOT NULL,               -- 原始文件名
+  stored_name       TEXT NOT NULL,               -- 存储文件名（data/recordings/）
+  size              INTEGER NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'uploading',
+  -- uploading(转传OSS) / transcribing(转写中) / analyzing(分析中) / done / failed
+  transcript        TEXT,                        -- ASR 转写全文（留存）
+  knowledge_source_id INTEGER REFERENCES knowledge_sources(id) ON DELETE SET NULL,
+  error             TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rec_iv ON recordings(interview_id);
 `)
 
 // 数据迁移：曾短暂把轮次状态合并为 interviewing，按最新面试记录恢复轮次（无记录则归为一面）

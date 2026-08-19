@@ -1,0 +1,19 @@
+{
+  "ark": {
+    "apiKey": "填入火山方舟 API Key",
+    "model": "doubao-seed-2-0-mini-260428",
+    "baseUrl": "https://ark.cn-beijing.volces.com/api/v3"
+  },
+  "asr": {
+    "apiKey": "填入新版控制台 API Key（旧版控制台改用下面的 appId + accessToken）",
+    "appId": "",
+    "accessToken": "",
+    "resourceId": "volc.seedasr.auc"
+  },
+  "oss": {
+    "accessKeyId": "填入阿里云 AccessKeyId",
+    "accessKeySecret": "填入阿里云 AccessKeySecret",
+    "bucket": "填入私有桶名",
+    "region": "如 oss-cn-beijing"
+  }
+}

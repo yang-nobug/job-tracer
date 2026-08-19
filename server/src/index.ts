@@ -10,6 +10,7 @@ import { resumesRouter } from './routes/resumes.js'
 import { statsRouter } from './routes/stats.js'
 import { knowledgeRouter } from './routes/knowledge.js'
 import { knowledgeAiRouter } from './routes/knowledge-ai.js'
+import { recordingsRouter } from './routes/recordings.js'
 import { aiRouter } from './routes/ai.js'
 import { jdParseHandler } from './jd-parser.js'
 
@@ -27,6 +28,7 @@ app.use('/api/resumes', resumesRouter)
 app.use('/api/applications', applicationsRouter)
 app.use('/api/knowledge', knowledgeRouter)
 app.use('/api', knowledgeAiRouter)
+app.use('/api/recordings', recordingsRouter)
 app.post('/api/jd-parse', jdParseHandler)
 
 // 统一错误处理（422/500 -> JSON）

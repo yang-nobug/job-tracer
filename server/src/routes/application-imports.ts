@@ -6,7 +6,19 @@ import { activeImports, cleanupExpiredImports, createImport, deleteImport, getIm
 import { analyzeImport, extractionConfig } from '../application-extraction.js'
 
 export const applicationImportsRouter = Router()
-const upload = multer({ storage: multer.memoryStorage(), limits: { files: IMPORT_LIMITS.images, fileSize: IMPORT_LIMITS.imageBytes, fields: 3, fieldSize: IMPORT_LIMITS.text * 4 + 2000, parts: IMPORT_LIMITS.images + 3 } }).array('images', IMPORT_LIMITS.images)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: IMPORT_LIMITS.images * 2,
+    fileSize: IMPORT_LIMITS.imageBytes,
+    fields: 3,
+    fieldSize: IMPORT_LIMITS.text * 4 + 2000,
+    parts: IMPORT_LIMITS.images * 2 + 3
+  }
+}).fields([
+  { name: 'images', maxCount: IMPORT_LIMITS.images },
+  { name: 'inference_images', maxCount: IMPORT_LIMITS.images }
+])
 // Limit concurrent uploads too, so the multipart byte limits bound peak memory.
 let uploading = false
 applicationImportsRouter.get('/config', (_req, res) => res.json(extractionConfig()))
@@ -20,7 +32,8 @@ applicationImportsRouter.post('/', (req, res, next) => {
       cleanupExpiredImports()
       let metadata: unknown
       try { metadata = JSON.parse(req.body?.metadata ?? '{}') } catch { throw new ImportError('材料信息格式不正确') }
-      res.status(201).json(createImport(req.body?.text ?? '', (req.files ?? []) as Express.Multer.File[], metadata))
+      const uploaded = (req.files ?? {}) as Record<string, Express.Multer.File[]>
+      res.status(201).json(createImport(req.body?.text ?? '', uploaded.images ?? [], uploaded.inference_images ?? [], metadata))
     } catch (err) { next(err) }
   })
 })

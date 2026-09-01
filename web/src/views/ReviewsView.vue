@@ -97,6 +97,16 @@ function fmtSize(bytes: number): string {
   return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.ceil(bytes / 1024)}KB`
 }
 
+function progressLabel(rec: RecordingRow): string {
+  if (rec.status === 'analyzing' && rec.chunk_total > 0) {
+    if (rec.analysis_stage === 'merging') return `正在合并 ${rec.chunk_done}/${rec.chunk_total} 个分段`
+    if (rec.analysis_stage === 'finalizing') return '正在保存复盘和题目'
+    return `分段分析 ${rec.chunk_done}/${rec.chunk_total}`
+  }
+  if (rec.status === 'analyzing') return rec.analysis_stage === 'finalizing' ? '正在保存结果' : '正在分析转写'
+  return ''
+}
+
 onMounted(async () => {
   try {
     // /reviews 返回的行结构含 application_id/company/position
@@ -149,6 +159,7 @@ onUnmounted(() => {
           <el-button size="small" link type="danger" @click="removeRecording(rec)">删除</el-button>
         </div>
         <div v-if="rec.status === 'failed' && rec.error" class="rec-error">失败原因：{{ rec.error }}</div>
+        <div v-if="progressLabel(rec)" class="rec-progress">{{ progressLabel(rec) }}</div>
         <div v-if="rec.status === 'done'" class="rec-done">
           ✅ 复盘已生成，题目已入库「我的面试」面经
         </div>
@@ -187,6 +198,7 @@ onUnmounted(() => {
 .rec-card :deep(.el-card__body) { padding: 12px 14px; }
 .rec-name { color: #606266; font-size: 13px; }
 .rec-error { color: #f56c6c; font-size: 12px; margin-top: 6px; }
+.rec-progress { color: #b88230; font-size: 12px; margin-top: 6px; }
 .rec-done { color: #67c23a; font-size: 12px; margin-top: 6px; }
 .transcript {
   margin: 8px 0 0;

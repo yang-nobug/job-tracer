@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, bumpKnowledge } from '../store'
+import { createInferenceImage } from '../utils/inference-image'
 import {
   ROUNDS,
   KNOWLEDGE_CATEGORIES,
@@ -198,7 +199,8 @@ async function extract(): Promise<void> {
     // 传截图（先落库留底，AI 从磁盘读）
     uploadedImages = []
     for (const f of files.value) {
-      const img = await api.uploadKnowledgeImage(sourceId, f)
+      const inferenceFile = await createInferenceImage(f)
+      const img = await api.uploadKnowledgeImage(sourceId, f, inferenceFile)
       uploadedImages.push(img)
     }
 
@@ -385,6 +387,11 @@ watch(visible, (open) => {
         show-word-limit
         class="text-area"
         placeholder="面经文字粘贴到这里（≤1 万字）。公司/岗位/轮次 AI 会自动识别，也可以只用截图。"
+      />
+      <el-alert
+        type="info"
+        :closable="false"
+        title="AI 识别会发送文字和最长边不超过 2048 像素的图片副本；原图仅保存在本机供核对。请先移除无关个人信息。"
       />
       <div class="step-actions">
         <el-button type="primary" size="large" :loading="extracting" :disabled="!hasContent" @click="extract">

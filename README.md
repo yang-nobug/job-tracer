@@ -7,9 +7,10 @@
 
 ## 快速开始
 
-1. 已安装 Node.js（≥ 22）
-2. **双击 `start.bat`**：首次会自动安装依赖并构建，之后自动启动服务并打开浏览器
-3. 访问 <http://localhost:3210>
+1. 安装 Node.js 24.x（推荐与 `.node-version` 一致的 24.20.0）
+2. 如需使用“AI 面试准备”，另安装 Python 3.11 或 3.12；`start.bat` 会自动创建 `.venv-agent` 并安装固定版本依赖
+3. **双击 `start.bat`**：启动前会检查 Node、依赖锁、`better-sqlite3` ABI、前端产物和 Agent 环境；需要时自动安装、重编译或构建
+4. 访问 <http://localhost:3210>
 
 服务仅监听本机地址 `127.0.0.1:3210`，不向局域网开放。
 
@@ -21,6 +22,7 @@
 | 智能录入 | 新增投递 →「招聘信息智能录入」；可粘贴文字、拖入或 Ctrl+V 粘贴最多 9 张截图，核对识别字段及原文依据后保存 |
 | 改状态 | 看板拖拽卡片；或点开详情用状态下拉 |
 | 添加面试 | 详情 → 面试 → 添加（自动生成复盘 md 文件） |
+| AI 面试准备 | 面试卡片 →「✨ AI 准备」；设置目标和可用时间，审核并可编辑计划，确认后才写入准备清单 |
 | 写复盘 | 面试的「📝 复盘」，应用内编辑或直接改 `server/data/reviews/*.md` |
 | 简历 | 表单里上传/选择简历，PDF 支持在线预览 |
 | 备份 | 双击 `backup.bat`，数据整体复制到 `backups/` |
@@ -32,19 +34,29 @@ npm run dev     # 开发模式（前端热更新 + 后端 watch）
 npm run build   # 构建前端到 server/public
 npm start       # 生产模式启动
 node test-api.mjs  # 后端 API 冒烟测试（需服务已启动）
+python -m unittest agent_service.test_graph  # Agent 离线编排与断点恢复测试
+node scripts/prep-agent-e2e.mjs              # Agent 跨进程 mock 端到端测试
 ```
 
 ## AI 功能（可选）
 
-支持接入火山方舟大模型（豆包），提供 **AI JD 解析**（录入时自动提取公司/职位/地点+岗位摘要）和**复盘 AI 点评**（薄弱点分析/改进建议/下轮追问预测）：
+支持接入火山方舟大模型（豆包），用于招聘材料识别、AI JD 解析、复盘点评、知识库拆题与答案生成、录音复盘、AI 助教和面试准备 Agent：
 
 1. 复制 `config.example.json` 为 `config.json`
 2. 填入火山方舟的 `apiKey`（模型 ID 已预填 `doubao-seed-2-0-mini-260428`，如换模型自行修改）
-3. 重启服务即可，入口在录入表单的「粘贴 JD 解析」和复盘编辑器的「✨ AI 点评」
+3. 重启服务即可
 
 不配置也能正常使用（AI 按钮会提示未配置，本地正则解析不受影响）。API Key 只存在本地 config.json（已 gitignore），仅后端调用，不会发到浏览器。
 
-招聘智能录入使用 `ark.recruitment.model`。有截图时，该模型还必须在 `ark.models` 中明确标记 `"vision": true`。`outputMode` 取 `text`、`json_object` 或 `json_schema`，必须按所用模型实际支持的能力配置；不确定时使用 `text`。截图和文字仅在点击「开始识别」后发送给已配置的 AI 服务，原始材料保存在本机 `data/application_materials/`，随投递记录删除。
+AI 参数按 `ark.tasks` 中的任务配置：`applicationImport`、`jdParse`、`knowledgeExtract`、`answerGenerate`、`tutor`、`recordingReview`、`reviewAdvice` 和 `interviewPrepAgent`。每项任务可单独设置 `enabled`、`model`、`outputMode`、`maxOutputTokens`、`temperature`、`timeoutMs` 和 `thinking`。旧的 `ark.recruitment` 仍兼容，等价于 `tasks.applicationImport`。页面右上角「AI 数据说明」可随时查看数据去向并在本机停用或重新启用各项能力。
+
+图片任务所选模型必须在 `ark.models` 中明确标记 `"vision": true`；没有明确声明时不会发送图片。`outputMode` 可取 `text`、`json_object` 或 `json_schema`，只有确认模型支持结构化输出时才使用 `json_schema` 并在模型上声明 `"structuredOutput": true`，不确定时使用 `text`。即使使用文本模式，服务端仍会执行 JSON Schema 对应的运行时校验，并在格式失败时最多修复一次。
+
+截图和文字仅在点击相应 AI 操作后发送给已配置的服务。招聘材料和知识截图的原图保存在本机；浏览器另生成最长边不超过 2048 像素、去掉 EXIF 的 JPEG 推理副本，AI 只读取该副本。每次 AI 请求只记录任务、模型、耗时、token、状态和提示内容哈希，不保存提示词或模型原始回答，最近记录可在「AI 数据说明」查看。
+
+AI 助教的知识检索使用本机 SQLite FTS5 trigram/BM25 与 LIKE 回退做混合召回，再按题目命中、来源和历史反馈重排。回答使用本地资料时会标注 `[K1]` 并在消息下方显示可点击来源；👍/👎 只作为有界排序信号，不会保存一份新的提问原文。当前脱敏固定集 Recall@5 和 MRR 均为 1.0，暂不引入 Embedding 或外部向量数据库。
+
+面试准备 Agent 使用本机 FastAPI + LangGraph 做受控工作流。它通过 Express 的内部只读工具读取岗位、JD、历史复盘、知识掌握度和相关面经，模型调用仍统一经过 Node AI Gateway 并写入 `ai_runs`。计划会先暂停在人工审核节点；用户批准或编辑确认后，Express 才在事务中批量写入该场面试的清单。Graph 状态保存在本机 SQLite，可在进程重启后恢复；Agent 不执行任意 SQL、文件操作、外部搜索或桌面控制。
 
 **提示词**独立存放在 `server/src/prompts/` 目录（Markdown 文件），可以直接编辑调优，**修改后无需重启**：
 
@@ -54,10 +66,17 @@ node test-api.mjs  # 后端 API 冒烟测试（需服务已启动）
 | `application-extract.system.md` | 多图/文字招聘材料提取规则（字段证据、状态、投递时间和冲突） |
 | `review-advice.system.md` | 复盘点评的角色与输出格式要求 |
 | `review-advice.user.md` | 点评请求的内容模板，`{{company}}` `{{jd}}` `{{review}}` 等占位符会被实际数据替换 |
-
-## 暂停的功能
-
-BOSS 桌面自动化暂时停用：界面不再显示入口，旧的自动化页面链接会跳回看板；后端不再加载自动化接口、定时调度器或桌面控制模块。源码、原有配置和历史数据保留，其他投递跟踪、复盘与学习功能不受影响。
+| `knowledge-extract.system.md` | 面经文字/截图拆题与分类 |
+| `knowledge-answer.system.md` | 批量生成结构化题目答案 |
+| `recording-analysis.system.md` | 录音转写生成复盘和题目列表 |
+| `recording-chunk.system.md` | 长录音逐段提取实际问答和表现 |
+| `recording-merge.system.md` | 合并长录音分段、去重并生成整体复盘 |
+| `learn-tutor.system.md` | AI 助教的对话规则和资料边界 |
+| `prep-role-profile.system.md` | 面试准备 Agent 的岗位画像提取 |
+| `prep-query-plan.system.md` | 面试准备 Agent 的知识检索计划 |
+| `prep-gap-analysis.system.md` | 面试准备 Agent 的岗位与能力差距分析 |
+| `prep-plan.system.md` | 面试准备 Agent 的限时准备计划生成 |
+| `prep-critic.system.md` | 面试准备 Agent 的事实、引用和可执行性审查 |
 
 ## 数据位置
 
@@ -66,10 +85,13 @@ BOSS 桌面自动化暂时停用：界面不再显示入口，旧的自动化页
 - `job-tracer.db` — SQLite 数据库（记录、面试、清单）
 - `uploads/` — 上传的简历文件
 - `reviews/` — 面试复盘 Markdown
-- `application_materials/` — 智能录入保留的原始招聘截图；原始文字和识别结果保存在 SQLite 中
+- `application_materials/` — 智能录入的原始招聘截图和 AI 推理副本；原始文字、关联关系和识别结果保存在 SQLite 中
+- `prep_agent_checkpoints.db` — LangGraph 运行状态与人工审核断点
+
+数据库升级由 001～007 编号迁移执行，已应用版本记录在 `schema_migrations`。迁移只做向前兼容的增量升级，启动前仍建议按需使用 `backup.bat` 备份整个 `data/`。
 
 删除程序不影响数据；重装/换电脑时拷走整个 `data` 目录即可迁移。
 
 ## 技术栈
 
-Vue 3 + Element Plus + ECharts / Express 5 + better-sqlite3 / Vite + TypeScript
+Vue 3 + Element Plus + ECharts / Express 5 + better-sqlite3 / Python 3.11～3.12 + FastAPI + LangGraph / Vite + TypeScript

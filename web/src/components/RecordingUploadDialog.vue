@@ -124,6 +124,11 @@ async function submit(): Promise<void> {
     <div class="flow-tip">
       上传后自动：转写全文 → AI 分析生成复盘 → 题目入库「我的面试」面经。长录音需要几分钟，可以关掉弹窗去干别的。
     </div>
+    <el-alert
+      type="info"
+      :closable="false"
+      title="录音会临时上传到配置的私有 OSS，供语音识别服务读取，转写结束后立即尝试删除；转写文本随后发送至火山方舟生成复盘。录音和转写会保留在本机。"
+    />
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" :loading="uploading" @click="submit">上传并开始转写</el-button>
@@ -155,4 +160,5 @@ async function submit(): Promise<void> {
 .file-name { font-size: 14px; color: #303133; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { color: #909399; font-size: 12px; }
 .flow-tip { color: #909399; font-size: 12px; line-height: 1.6; margin: 4px 0 0 80px; }
+.el-alert { margin-top: 14px; }
 </style>

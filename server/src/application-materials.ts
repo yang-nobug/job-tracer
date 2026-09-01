@@ -8,7 +8,11 @@ export class ImportError extends Error {
   constructor(message: string, public status = 422) { super(message) }
 }
 interface ImportRow { id: string; application_id: number | null; analysis_json: string | null; confirmed_json: string | null; expires_at: string }
-interface MaterialRow extends Omit<ImportSource, 'url'> { stored_name: string | null }
+interface MaterialRow extends Omit<ImportSource, 'url'> {
+  stored_name: string | null
+  inference_stored_name: string | null
+  inference_mime: string | null
+}
 export const activeImports = new Map<string, AbortController>()
 
 export function materialPath(name: string): string {
@@ -72,27 +76,40 @@ function filename(value: string): string {
   const decoded = Buffer.from(value, 'latin1').toString('utf8')
   return path.basename(decoded.includes('\ufffd') ? value : decoded).slice(0, 200)
 }
-export function createImport(text: unknown, files: Express.Multer.File[], meta: unknown): ImportDraft {
+export function createImport(text: unknown, files: Express.Multer.File[], inferenceFiles: Express.Multer.File[], meta: unknown): ImportDraft {
   if (typeof text !== 'string' || text.length > IMPORT_LIMITS.text) throw new ImportError(`文字最多 ${IMPORT_LIMITS.text} 字`)
   if (!text.trim() && !files.length) throw new ImportError('请添加文字或截图')
   if (files.length > IMPORT_LIMITS.images || files.reduce((sum, file) => sum + file.size, 0) > IMPORT_LIMITS.totalBytes) throw new ImportError('最多 9 张图片，总大小不超过 30 MB')
+  if (files.length !== inferenceFiles.length) throw new ImportError('图片推理副本缺失，请刷新页面后重新上传')
+  if (inferenceFiles.some(file => file.size > 5 * 1024 * 1024) || inferenceFiles.reduce((sum, file) => sum + file.size, 0) > 20 * 1024 * 1024) {
+    throw new ImportError('图片推理副本过大，请缩小截图后重试')
+  }
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new ImportError('材料信息格式不正确')
   const metadata = meta as { image_dates?: unknown; text_date?: unknown }
   const dates = metadata.image_dates ?? files.map(() => null)
   if (!Array.isArray(dates) || dates.length !== files.length) throw new ImportError('截图日期必须与图片一一对应')
-  const images = files.map((file, i) => ({ file, info: inspectImage(file.buffer), date: capturedAt(dates[i]) }))
+  const images = files.map((file, i) => {
+    const inferenceFile = inferenceFiles[i]
+    const inferenceInfo = inspectImage(inferenceFile.buffer)
+    if (Math.max(inferenceInfo.width, inferenceInfo.height) > 2048) throw new ImportError('图片推理副本最长边不能超过 2048 像素')
+    return { file, info: inspectImage(file.buffer), inferenceFile, inferenceInfo, date: capturedAt(dates[i]) }
+  })
   const textDate = capturedAt(metadata.text_date)
   const id = randomUUID()
   const written: string[] = []
   try {
     db.transaction(() => {
       db.prepare('INSERT INTO application_imports(id, created_at, expires_at) VALUES (?, ?, ?)').run(id, now(), new Date(Date.now() + 24 * 3600_000).toISOString())
-      const insert = db.prepare('INSERT INTO application_materials(import_id,id,kind,text,filename,stored_name,mime,captured_at) VALUES (?,?,?,?,?,?,?,?)')
-      if (text.trim()) insert.run(id, 'text_1', 'text', text.trim(), null, null, null, textDate)
-      images.forEach(({ file, info, date }, i) => {
+      const insert = db.prepare(`INSERT INTO application_materials(
+        import_id,id,kind,text,filename,stored_name,mime,captured_at,inference_stored_name,inference_mime
+      ) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      if (text.trim()) insert.run(id, 'text_1', 'text', text.trim(), null, null, null, textDate, null, null)
+      images.forEach(({ file, info, inferenceFile, inferenceInfo, date }, i) => {
         const name = `${randomUUID()}.${info.ext}`
+        const inferenceName = `${randomUUID()}.${inferenceInfo.ext}`
         writeFileSync(materialPath(name), file.buffer, { flag: 'wx' }); written.push(name)
-        insert.run(id, `image_${i + 1}`, 'image', null, filename(file.originalname), name, info.mime, date)
+        writeFileSync(materialPath(inferenceName), inferenceFile.buffer, { flag: 'wx' }); written.push(inferenceName)
+        insert.run(id, `image_${i + 1}`, 'image', null, filename(file.originalname), name, info.mime, date, inferenceName, inferenceInfo.mime)
       })
     })()
   } catch (error) { written.forEach(removeFile); throw error }
@@ -102,7 +119,7 @@ function removeFile(name: string): void {
   try { unlinkSync(materialPath(name)) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
 }
 export function getMaterialFileNames(id: string): string[] {
-  return getMaterials(id).flatMap(source => source.stored_name ? [source.stored_name] : [])
+  return getMaterials(id).flatMap(source => [source.stored_name, source.inference_stored_name].filter((name): name is string => !!name))
 }
 export function removeMaterialFiles(names: string[]): void {
   for (const name of names) removeFile(name)
@@ -120,13 +137,18 @@ export function getImport(id: string): ImportDraft {
   const row = getImportRow(id)
   return {
     id, application_id: row.application_id, analysis: row.analysis_json ? JSON.parse(row.analysis_json) as ImportAnalysis : null,
-    sources: getMaterials(id).map(({ stored_name, ...source }) => ({ ...source, url: stored_name ? `/api/application-imports/${id}/sources/${source.id}/file` : null }))
+    sources: getMaterials(id).map(({ stored_name, inference_stored_name: _inferenceName, inference_mime: _inferenceMime, ...source }) => ({
+      ...source,
+      url: stored_name ? `/api/application-imports/${id}/sources/${source.id}/file` : null
+    }))
   }
 }
 export function imageDataUrl(importId: string, sourceId: string): string {
   const image = getMaterials(importId).find(source => source.id === sourceId && source.kind === 'image')
-  if (!image?.stored_name) throw new ImportError('图片不存在', 404)
-  return `data:${image.mime};base64,${readFileSync(materialPath(image.stored_name)).toString('base64')}`
+  const storedName = image?.inference_stored_name ?? image?.stored_name
+  const mime = image?.inference_mime ?? image?.mime
+  if (!storedName || !mime) throw new ImportError('图片不存在', 404)
+  return `data:${mime};base64,${readFileSync(materialPath(storedName)).toString('base64')}`
 }
 export function deleteImport(id: string, allowCommitted = false): void {
   const row = db.prepare('SELECT * FROM application_imports WHERE id=?').get(id) as ImportRow | undefined

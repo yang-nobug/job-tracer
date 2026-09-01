@@ -26,8 +26,6 @@ const router = createRouter({
     { path: '/learn/knowledge', component: KnowledgeView },
     // 面经详情独立页（整页浏览，不再用抽屉）
     { path: '/learn/knowledge/:id', component: SourceDetailView },
-    // 自动化暂时停用，旧链接回到看板
-    { path: '/track/automation', redirect: '/track/kanban' },
     // 旧路由重定向（收藏链接不失效）
     { path: '/kanban', redirect: '/track/kanban' },
     { path: '/list', redirect: '/track/list' },

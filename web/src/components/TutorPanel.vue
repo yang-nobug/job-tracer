@@ -4,7 +4,7 @@ import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, toggleTutor } from '../store'
-import type { TutorMessage, TutorSession } from '../types'
+import type { TutorCitation, TutorMessage, TutorSession } from '../types'
 
 // AI 助教（需求 3.9.4）：学习区右侧常驻对话栏
 // 会话与消息持久化在服务端 SQLite（tutor_sessions / tutor_messages），换页面/重启都在
@@ -44,6 +44,7 @@ const activeSessionId = ref<number | null>(null)
 const messages = ref<TutorMessage[]>([])
 const input = ref('')
 const sending = ref(false)
+const retryRequest = ref<{ sessionId: number | null; content: string; requestId: string } | null>(null)
 const historyOpen = ref(false)
 const listEl = ref<HTMLElement | null>(null)
 const inputEl = ref<{ focus: () => void } | null>(null)
@@ -71,6 +72,7 @@ async function selectSession(id: number): Promise<void> {
     const r = await api.get<{ messages: TutorMessage[] }>(`/tutor/sessions/${id}`)
     activeSessionId.value = id
     messages.value = r.messages
+    retryRequest.value = null
     await scrollToBottom()
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -82,6 +84,7 @@ function newChat(): void {
   historyOpen.value = false
   activeSessionId.value = null
   messages.value = []
+  retryRequest.value = null
 }
 
 function removeSession(s: TutorSession): void {
@@ -104,26 +107,58 @@ function removeSession(s: TutorSession): void {
 async function send(): Promise<void> {
   const text = input.value.trim()
   if (!text || sending.value) return
+  const requestId = retryRequest.value?.sessionId === activeSessionId.value && retryRequest.value.content === text
+    ? retryRequest.value.requestId
+    : crypto.randomUUID()
   input.value = ''
   const isNew = activeSessionId.value === null
   messages.value.push({ id: 0, role: 'user', content: text, created_at: '' })
   sending.value = true
   await scrollToBottom()
   try {
-    const r = await api.post<{ session_id: number; reply: string }>('/ai/knowledge/tutor', {
+    const r = await api.post<{
+      session_id: number
+      assistant_message_id: number
+      reply: string
+      request_id: string
+      citations: TutorCitation[]
+    }>('/ai/knowledge/tutor', {
       session_id: activeSessionId.value,
-      content: text
+      content: text,
+      request_id: requestId
     })
+    retryRequest.value = null
     activeSessionId.value = r.session_id
-    messages.value.push({ id: 0, role: 'assistant', content: r.reply, created_at: '' })
+    messages.value.push({
+      id: r.assistant_message_id,
+      role: 'assistant',
+      content: r.reply,
+      created_at: '',
+      citations: r.citations,
+      feedback: null
+    })
     if (isNew) await loadSessions() // 新会话标题已生成，刷一下列表
   } catch (err) {
     messages.value.pop() // 失败时把这条用户消息撤回，方便重发
     input.value = text
+    retryRequest.value = { sessionId: activeSessionId.value, content: text, requestId }
     ElMessage.error((err as Error).message)
   } finally {
     sending.value = false
     await scrollToBottom()
+  }
+}
+
+async function setFeedback(message: TutorMessage, value: -1 | 1): Promise<void> {
+  if (!message.id) return
+  const next = message.feedback === value ? 0 : value
+  const previous = message.feedback ?? null
+  message.feedback = next === 0 ? null : next
+  try {
+    await api.put(`/tutor/messages/${message.id}/feedback`, { value: next })
+  } catch (error) {
+    message.feedback = previous
+    ElMessage.error((error as Error).message)
   }
 }
 
@@ -197,7 +232,25 @@ onMounted(async () => {
       </div>
       <div v-for="(m, i) in messages" :key="i" class="tutor-msg" :class="m.role">
         <div v-if="m.role === 'user'" class="tutor-bubble">{{ m.content }}</div>
-        <div v-else class="tutor-bubble md-body" v-html="md.render(m.content)" />
+        <div v-else class="tutor-bubble">
+          <div class="md-body" v-html="md.render(m.content)" />
+          <div v-if="m.citations?.length" class="tutor-citations">
+            <div class="citation-title">参考了本地知识库</div>
+            <template v-for="citation in m.citations" :key="citation.item_id">
+              <router-link
+                v-if="citation.source_id"
+                :to="`/learn/knowledge/${citation.source_id}`"
+                class="citation-link"
+              >[{{ citation.ref }}] {{ citation.question }}</router-link>
+              <span v-else class="citation-link">[{{ citation.ref }}] {{ citation.question }}</span>
+            </template>
+          </div>
+          <div v-if="m.id" class="tutor-feedback">
+            <span>这条回答有帮助吗？</span>
+            <el-button link size="small" :type="m.feedback === 1 ? 'primary' : ''" @click="setFeedback(m, 1)">👍</el-button>
+            <el-button link size="small" :type="m.feedback === -1 ? 'danger' : ''" @click="setFeedback(m, -1)">👎</el-button>
+          </div>
+        </div>
       </div>
       <div v-if="sending" class="tutor-msg assistant">
         <div class="tutor-bubble tutor-typing">思考中…</div>
@@ -299,6 +352,11 @@ onMounted(async () => {
 .tutor-msg.user .tutor-bubble { background: #409eff; color: #fff; white-space: pre-wrap; }
 .tutor-msg.assistant .tutor-bubble { background: #f4f6fa; }
 .tutor-typing { color: #909399; }
+.tutor-citations { border-top: 1px solid #dfe5ec; margin-top: 8px; padding-top: 7px; display: flex; flex-direction: column; gap: 4px; }
+.citation-title { color: #909399; font-size: 11px; }
+.citation-link { color: #409eff; font-size: 11px; line-height: 1.45; text-decoration: none; }
+.citation-link:hover { text-decoration: underline; }
+.tutor-feedback { border-top: 1px solid #e7ebf0; margin-top: 7px; padding-top: 5px; color: #909399; font-size: 11px; display: flex; align-items: center; gap: 2px; }
 .md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 15px; margin: 8px 0 4px; }
 .md-body :deep(ul) { padding-left: 18px; }
 .md-body :deep(pre) { background: #fff; border: 1px solid #ebeef5; padding: 8px; border-radius: 4px; overflow: auto; }

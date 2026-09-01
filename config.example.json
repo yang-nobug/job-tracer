@@ -2,16 +2,29 @@
   "ark": {
     "apiKey": "填入火山方舟 API Key",
     "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+    "defaultModel": "doubao-seed-2-0-mini-260428",
     "models": [
-      { "id": "doubao-seed-2-0-mini-260428", "label": "Seed 2.0 mini（快）", "vision": true },
-      { "id": "填入模型ID", "label": "显示名（随便起）", "vision": false }
+      {
+        "id": "doubao-seed-2-0-mini-260428",
+        "label": "Seed 2.0 mini（快）",
+        "vision": true,
+        "structuredOutput": false,
+        "thinking": false,
+        "streaming": false,
+        "maxImages": 9,
+        "maxOutputTokens": 8192
+      },
+      { "id": "填入模型ID", "label": "显示名（随便起）", "vision": false, "structuredOutput": false, "thinking": false, "streaming": false }
     ],
-    "recruitment": {
-      "model": "doubao-seed-2-0-mini-260428",
-      "outputMode": "text",
-      "maxImages": 9,
-      "temperature": 0,
-      "thinking": "disabled"
+    "tasks": {
+      "applicationImport": { "enabled": true, "outputMode": "text", "maxImages": 9, "maxOutputTokens": 8192, "temperature": 0, "timeoutMs": 120000, "thinking": "disabled" },
+      "jdParse": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0, "timeoutMs": 60000, "thinking": "disabled" },
+      "knowledgeExtract": { "enabled": true, "outputMode": "text", "maxImages": 1, "maxOutputTokens": 4096, "temperature": 0, "timeoutMs": 90000, "thinking": "disabled" },
+      "answerGenerate": { "enabled": true, "outputMode": "text", "maxOutputTokens": 8192, "temperature": 0.2, "timeoutMs": 180000, "thinking": "disabled" },
+      "tutor": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0.3, "timeoutMs": 120000, "thinking": "disabled" },
+      "recordingReview": { "enabled": true, "outputMode": "text", "maxOutputTokens": 8192, "temperature": 0.2, "timeoutMs": 300000, "thinking": "disabled" },
+      "reviewAdvice": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0.3, "timeoutMs": 90000, "thinking": "disabled" },
+      "interviewPrepAgent": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0.2, "timeoutMs": 90000, "thinking": "disabled" }
     }
   },
   "asr": {

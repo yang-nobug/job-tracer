@@ -5,6 +5,7 @@ import { api } from '../api'
 import { bumpData } from '../store'
 import { ROUNDS, type Interview } from '../types'
 import ReviewEditor from './ReviewEditor.vue'
+import InterviewPrepAgentDialog from './InterviewPrepAgentDialog.vue'
 
 const props = defineProps<{ appId: number; interviews: Interview[] }>()
 
@@ -90,6 +91,7 @@ async function removeItem(itemId: number): Promise<void> {
 
 // 复盘编辑
 const editingInterview = ref<Interview | null>(null)
+const prepInterview = ref<Interview | null>(null)
 </script>
 
 <template>
@@ -119,6 +121,7 @@ const editingInterview = ref<Interview | null>(null)
         <span class="iv-time">{{ iv.scheduled_at }}</span>
         <el-tag v-if="iv.done" type="success" size="small">已完成</el-tag>
         <span class="iv-spacer" />
+        <el-button link type="primary" size="small" @click="prepInterview = iv">✨ AI 准备</el-button>
         <el-button link size="small" @click="editingInterview = iv">📝 复盘</el-button>
         <el-button link size="small" @click="toggleDone(iv)">{{ iv.done ? '标记未完成' : '标记完成' }}</el-button>
         <el-button link type="danger" size="small" @click="removeInterview(iv)">删除</el-button>
@@ -149,6 +152,13 @@ const editingInterview = ref<Interview | null>(null)
       v-if="editingInterview"
       :interview="editingInterview"
       @closed="editingInterview = null"
+    />
+    <InterviewPrepAgentDialog
+      :model-value="prepInterview !== null"
+      :application-id="props.appId"
+      :interview="prepInterview"
+      @update:model-value="value => { if (!value) prepInterview = null }"
+      @completed="bumpData"
     />
   </div>
 </template>

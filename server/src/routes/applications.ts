@@ -119,7 +119,9 @@ applicationsRouter.get('/', (req: Request, res: Response) => {
 
 // 详情
 applicationsRouter.get('/:id', (req: Request, res: Response) => {
-  const app = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id)
+  const app = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id) as
+    | (Record<string, unknown> & { resume_id: number | null })
+    | undefined
   if (!app) {
     res.status(404).json({ message: '记录不存在' })
     return
@@ -135,7 +137,7 @@ applicationsRouter.get('/:id', (req: Request, res: Response) => {
       .prepare('SELECT * FROM checklist_items WHERE interview_id = ? ORDER BY sort, id')
       .all(iv.id)
   }
-  const resumeId = (app as { resume_id: number | null }).resume_id
+  const resumeId = app.resume_id
   const resume = resumeId
     ? db.prepare('SELECT * FROM resumes WHERE id = ?').get(resumeId) ?? null
     : null

@@ -146,8 +146,4 @@ function onClose(): void {
 .md-body :deep(h2) { font-size: 17px; margin-top: 18px; }
 .md-body :deep(h3) { font-size: 15px; }
 .md-body :deep(ul) { padding-left: 20px; }
-@media (max-width: 768px) {
-  .edit-grid { grid-template-columns: 1fr; }
-  .el-dialog { width: 96% !important; }
-}
 </style>

@@ -87,11 +87,11 @@ function onCommand(cmd: string, app: Application): void {
       </div>
     </div>
 
-    <!-- 桌面表格 -->
+    <!-- 投递列表 -->
     <el-table
       v-if="sortedApps.length"
       :data="sortedApps"
-      class="desktop-table"
+      class="applications-table"
       stripe
       :row-class-name="rowClass"
       @row-click="onRowClick"
@@ -148,35 +148,8 @@ function onCommand(cmd: string, app: Application): void {
         </template>
       </el-table-column>
     </el-table>
-    <el-empty v-else description="没有符合条件的记录" class="desktop-table" />
+    <el-empty v-else description="没有符合条件的记录" class="applications-table" />
 
-    <!-- 移动端卡片 -->
-    <div v-if="sortedApps.length" class="mobile-cards">
-      <div
-        v-for="app in sortedApps"
-        :key="app.id"
-        class="m-card"
-        :class="{ 'm-dead': !!app.rejected_at }"
-        @click="openDetail(app.id)"
-      >
-        <div class="m-row">
-          <div class="m-title">
-            <span class="m-avatar" :style="{ background: avatarColor(app.company) }">
-              {{ app.company.slice(0, 1) }}
-            </span>
-            <span class="m-company">{{ app.company }}</span>
-          </div>
-          <StatusTag :app="app" />
-        </div>
-        <div class="m-position">{{ app.position }}</div>
-        <div class="m-meta">
-          <span>{{ app.channel || '-' }}</span>
-          <span v-if="app.next_interview_at" class="m-next">🎤 {{ app.next_interview_at.slice(5, 11) }}</span>
-          <span>{{ app.applied_at || '未投递' }}</span>
-        </div>
-      </div>
-    </div>
-    <el-empty v-else description="没有符合条件的记录" class="mobile-cards" />
   </div>
 </template>
 
@@ -185,8 +158,8 @@ function onCommand(cmd: string, app: Application): void {
 .list-tools { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .count { font-size: 13px; color: #909399; white-space: nowrap; }
 
-.desktop-table :deep(.el-table__row) { cursor: pointer; }
-.desktop-table :deep(.row-dead) { opacity: 0.55; }
+.applications-table :deep(.el-table__row) { cursor: pointer; }
+.applications-table :deep(.row-dead) { opacity: 0.55; }
 
 .cell-company { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .company-avatar {
@@ -204,30 +177,4 @@ function onCommand(cmd: string, app: Application): void {
 .dim { color: #c0c4cc; }
 .more-btn { margin-left: 8px; font-weight: 700; letter-spacing: 1px; }
 
-.mobile-cards { display: none; }
-@media (max-width: 768px) {
-  .list-tools { width: 100%; justify-content: space-between; }
-  .list-tools .el-select { flex: 1; }
-  .desktop-table { display: none; }
-  .mobile-cards { display: flex; flex-direction: column; gap: 10px; }
-  .m-card {
-    background: #fff; border-radius: 8px; padding: 12px 14px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); cursor: pointer;
-  }
-  .m-dead { opacity: 0.55; }
-  .m-row { display: flex; justify-content: space-between; align-items: center; }
-  .m-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .m-avatar {
-    width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0;
-    color: #fff; font-size: 15px; font-weight: 600;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .m-company { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .m-position { color: #606266; font-size: 13px; margin-top: 4px; }
-  .m-meta {
-    display: flex; justify-content: space-between; gap: 8px; margin-top: 8px;
-    font-size: 12px; color: #909399;
-  }
-  .m-next { color: #e6a23c; }
-}
 </style>

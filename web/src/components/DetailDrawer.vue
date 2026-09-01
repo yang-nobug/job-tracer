@@ -8,6 +8,7 @@ import { avatarColor } from '../utils/avatar'
 import StatusTag from './StatusTag.vue'
 import EventTimeline from './EventTimeline.vue'
 import InterviewPanel from './InterviewPanel.vue'
+import ApplicationMaterials from './ApplicationMaterials.vue'
 
 const props = defineProps<{ appId: number | null }>()
 const emit = defineEmits<(e: 'close') => void>()
@@ -40,8 +41,13 @@ const visible = computed({
 
 async function changeStatus(s: Status): Promise<void> {
   if (!detail.value) return
+  if (s !== 'unsent' && !detail.value.applied_at) {
+    ElMessage.info('请先确认实际投递日期，再保存状态')
+    openEditForm({ ...detail.value, status: s })
+    return
+  }
   try {
-    await api.put(`/applications/${detail.value.id}`, { ...detail.value, status: s })
+    await api.put(`/applications/${detail.value.id}`, { ...detail.value, status: s, ...(s === 'unsent' ? { applied_at: null, applied_time: null } : {}) })
     bumpData()
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -77,7 +83,7 @@ async function toggleReject(): Promise<void> {
 async function removeApp(): Promise<void> {
   if (!detail.value) return
   try {
-    await ElMessageBox.confirm(`确定删除「${detail.value.company} · ${detail.value.position}」？关联的动态、面试、清单会一并删除`, '删除确认', {
+    await ElMessageBox.confirm(`确定删除「${detail.value.company} · ${detail.value.position}」？关联的动态、面试、清单和原始招聘材料会一并删除`, '删除确认', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消'
@@ -131,7 +137,7 @@ function fmtDate(s: string | null): string {
         </div>
         <div class="info-item">
           <span class="info-label">投递日期</span>
-          <span class="info-value">{{ fmtDate(detail.applied_at) }}</span>
+          <span class="info-value">{{ fmtDate(detail.applied_at) }} {{ detail.applied_time || '' }}</span>
         </div>
         <div class="info-item">
           <span class="info-label">地点</span>
@@ -162,6 +168,7 @@ function fmtDate(s: string | null): string {
         </div>
       </div>
       <div v-if="detail.notes" class="notes">{{ detail.notes }}</div>
+      <ApplicationMaterials :imports="detail.materials ?? []" />
 
       <div v-if="detail.jd_text" class="section">
         <h4>📄 JD 正文</h4>

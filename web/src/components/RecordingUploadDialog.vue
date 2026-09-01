@@ -155,7 +155,4 @@ async function submit(): Promise<void> {
 .file-name { font-size: 14px; color: #303133; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { color: #909399; font-size: 12px; }
 .flow-tip { color: #909399; font-size: 12px; line-height: 1.6; margin: 4px 0 0 80px; }
-@media (max-width: 600px) {
-  .flow-tip { margin-left: 0; }
-}
 </style>

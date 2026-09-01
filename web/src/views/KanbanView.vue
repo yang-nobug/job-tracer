@@ -3,7 +3,8 @@ import { ref, reactive, watch, computed } from 'vue'
 import draggable from 'vuedraggable'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
-import { store, openDetail } from '../store'
+import { store, openDetail, openEditForm } from '../store'
+import { isCalendarDate } from '../../../shared/application-import'
 import { avatarColor } from '../utils/avatar'
 import { STATUS_ORDER, STATUS_LABELS, ASSESSMENT_STATUSES, INTERVIEW_STATUSES, type Application, type Status } from '../types'
 
@@ -75,11 +76,19 @@ async function onChange(key: Status | 'rejected'): Promise<void> {
     const rejectChanged = wantRejected !== !!app.rejected_at
     const statusChanged = !wantRejected && app.status !== key
     if (!rejectChanged && !statusChanged) continue
+    const appliedDropFromUnsent = key === 'applied' && app.status === 'unsent'
+    if (!wantRejected && key !== 'unsent' && !app.applied_at && !appliedDropFromUnsent) {
+      ElMessage.info('请先确认实际投递日期，再保存状态')
+      openEditForm({ ...app, status: key as Status })
+      load()
+      return
+    }
 
     // 从未投递拖入已投递 -> 先弹窗，顺手填投递链接（职位页/进度查询页）
     if (!wantRejected && key === 'applied' && app.status === 'unsent') {
       pendingApplied.value = app
       appliedForm.jd_link = app.jd_link || ''
+      appliedForm.applied_at = app.applied_at
       return
     }
 
@@ -97,7 +106,7 @@ async function onChange(key: Status | 'rejected'): Promise<void> {
         await api.patch(`/applications/${app.id}/reject`, { reject_type: 'company' })
       }
       if (statusChanged) {
-        await api.put(`/applications/${app.id}`, { ...app, status: key })
+        await api.put(`/applications/${app.id}`, { ...app, status: key, ...(key === 'unsent' ? { applied_at: null, applied_time: null } : {}) })
       }
       store.dataVersion++
     } catch (err) {
@@ -145,14 +154,20 @@ function cancelInterview(): void {
 
 // 拖入已投递时补投递链接
 const pendingApplied = ref<Application | null>(null)
-const appliedForm = reactive({ jd_link: '' })
+const appliedForm = reactive({ jd_link: '', applied_at: null as string | null })
+
+function useToday() {
+  const date = new Date()
+  appliedForm.applied_at = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
 
 async function confirmApplied(withLink: boolean): Promise<void> {
   const app = pendingApplied.value
   if (!app) return
+  if (!appliedForm.applied_at || !isCalendarDate(appliedForm.applied_at)) { ElMessage.warning('请先确认实际投递日期'); return }
   try {
     const link = withLink ? appliedForm.jd_link.trim() : (app.jd_link || '')
-    await api.put(`/applications/${app.id}`, { ...app, status: 'applied', jd_link: link })
+    await api.put(`/applications/${app.id}`, { ...app, status: 'applied', jd_link: link, applied_at: appliedForm.applied_at })
     store.dataVersion++
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -164,10 +179,6 @@ async function confirmApplied(withLink: boolean): Promise<void> {
 function cancelApplied(): void {
   pendingApplied.value = null
   load() // 撤销拖拽造成的视觉变化
-}
-
-function dragDisabled(): boolean {
-  return window.innerWidth <= 768
 }
 
 // 可折叠列：未投递 / 已挂（边缘池子，默认折叠省宽度）
@@ -246,7 +257,6 @@ const GROUP_COLOR = '#f5a623'
         :list="col.list"
         :group="'apps'"
         item-key="id"
-        :disabled="dragDisabled()"
         class="col-body"
         ghost-class="card-ghost"
         @change="onChange(col.key)"
@@ -304,7 +314,6 @@ const GROUP_COLOR = '#f5a623'
             :list="col.list"
             :group="'apps'"
             item-key="id"
-            :disabled="dragDisabled()"
             class="col-body"
             ghost-class="card-ghost"
             @change="onChange(col.key)"
@@ -363,7 +372,6 @@ const GROUP_COLOR = '#f5a623'
             :list="col.list"
             :group="'apps'"
             item-key="id"
-            :disabled="dragDisabled()"
             class="col-body"
             ghost-class="card-ghost"
             @change="onChange(col.key)"
@@ -430,7 +438,6 @@ const GROUP_COLOR = '#f5a623'
         :list="col.list"
         :group="'apps'"
         item-key="id"
-        :disabled="dragDisabled()"
         class="col-body"
         ghost-class="card-ghost"
         @change="onChange(col.key)"
@@ -480,10 +487,13 @@ const GROUP_COLOR = '#f5a623'
           「{{ pendingApplied.company }}」进入 <b>已投递</b>，顺手填上投递链接（职位页 / 进度查询页），以后点卡片上的 🔗 就能回来看进度：
         </p>
         <el-input v-model="appliedForm.jd_link" placeholder="https://…（可留空，稍后在编辑里补）" clearable />
+        <p>实际投递日期（必填，不会自动补今天）</p>
+        <el-date-picker v-model="appliedForm.applied_at" type="date" value-format="YYYY-MM-DD" placeholder="实际投递日期" />
+        <el-button link type="primary" @click="useToday">明确使用今天</el-button>
       </div>
       <template #footer>
         <el-button @click="cancelApplied">取消</el-button>
-        <el-button @click="confirmApplied(false)">暂不填写</el-button>
+        <el-button @click="confirmApplied(false)">不填写链接，保存日期</el-button>
         <el-button type="primary" @click="confirmApplied(true)">保存</el-button>
       </template>
     </el-dialog>
@@ -644,9 +654,4 @@ const GROUP_COLOR = '#f5a623'
 }
 .card-next { color: #d97a0d; font-weight: 500; }
 .iv-prompt-tip { margin: 0 0 12px; font-size: 14px; color: #3c4353; line-height: 1.6; }
-@media (max-width: 768px) {
-  .kanban-col { flex: 0 0 160px; min-width: 160px; }
-  .kanban-group { flex: 0 0 440px; min-width: 440px; }
-  .assessment-group { flex: 0 0 330px; min-width: 330px; }
-}
 </style>

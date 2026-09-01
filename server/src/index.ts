@@ -1,7 +1,6 @@
 import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import os from 'node:os'
 import { existsSync } from 'node:fs'
 import { applicationsRouter } from './routes/applications.js'
 import { eventsRouter } from './routes/events.js'
@@ -11,8 +10,10 @@ import { statsRouter } from './routes/stats.js'
 import { knowledgeRouter } from './routes/knowledge.js'
 import { knowledgeAiRouter } from './routes/knowledge-ai.js'
 import { recordingsRouter } from './routes/recordings.js'
+import { tutorRouter } from './routes/tutor.js'
 import { aiRouter } from './routes/ai.js'
 import { jdParseHandler } from './jd-parser.js'
+import { applicationImportsRouter } from './routes/application-imports.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = 3210
@@ -26,9 +27,12 @@ app.use('/api', interviewsRouter)
 app.use('/api', eventsRouter)
 app.use('/api/resumes', resumesRouter)
 app.use('/api/applications', applicationsRouter)
+app.use('/api/application-imports', applicationImportsRouter)
 app.use('/api/knowledge', knowledgeRouter)
 app.use('/api', knowledgeAiRouter)
 app.use('/api/recordings', recordingsRouter)
+app.use('/api/tutor', tutorRouter)
+// BOSS 桌面自动化暂时停用：不加载路由、定时调度或桌面控制模块。
 app.post('/api/jd-parse', jdParseHandler)
 
 // 统一错误处理（422/500 -> JSON）
@@ -47,14 +51,7 @@ if (existsSync(publicDir)) {
   })
 }
 
-app.listen(PORT, '0.0.0.0', () => {
+// 仅允许本机浏览器访问，不向局域网开放。
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`job-tracer 已启动: http://localhost:${PORT}`)
-  const nets = os.networkInterfaces()
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name] ?? []) {
-      if (net.family === 'IPv4' && !net.internal) {
-        console.log(`手机访问:      http://${net.address}:${PORT}`)
-      }
-    }
-  }
 })

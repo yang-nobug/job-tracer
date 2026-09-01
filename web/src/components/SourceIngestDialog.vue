@@ -479,8 +479,4 @@ watch(visible, (open) => {
 .cand-row { display: flex; gap: 8px; align-items: flex-start; }
 .cand-main { flex: 1; display: flex; flex-direction: column; gap: 6px; }
 .cand-answer :deep(textarea) { font-size: 12px; }
-@media (max-width: 768px) {
-  .el-dialog { width: 96% !important; }
-  .confirm-row { grid-template-columns: 1fr; }
-}
 </style>

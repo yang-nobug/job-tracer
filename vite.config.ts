@@ -9,9 +9,10 @@ export default defineConfig({
     emptyOutDir: true
   },
   server: {
+    host: '127.0.0.1',
     port: 5174,
     proxy: {
-      '/api': 'http://localhost:3210'
+      '/api': 'http://127.0.0.1:3210'
     }
   }
 })

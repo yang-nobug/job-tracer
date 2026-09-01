@@ -35,6 +35,7 @@ export interface Application {
   position: string
   status: Status
   applied_at: string | null
+  applied_time: string | null
   channel: string | null
   location: string | null
   resume_id: number | null
@@ -92,6 +93,7 @@ export interface Interview {
 }
 
 export interface ApplicationDetail extends Application {
+  materials?: import('../../shared/application-import').ImportDraft[]
   events: AppEvent[]
   interviews: Interview[]
   resume?: Resume | null
@@ -235,4 +237,21 @@ export interface RecordingRow {
 /** 录音详情（含转写全文） */
 export interface RecordingDetail extends RecordingRow {
   transcript: string | null
+}
+
+// ---------- AI 助教会话 ----------
+
+export interface TutorSession {
+  id: number
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface TutorMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
 }

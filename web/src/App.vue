@@ -8,7 +8,7 @@ import CountdownBar from './components/CountdownBar.vue'
 import AppFormDrawer from './components/AppFormDrawer.vue'
 import DetailDrawer from './components/DetailDrawer.vue'
 import SourceIngestDialog from './components/SourceIngestDialog.vue'
-import TutorDrawer from './components/TutorDrawer.vue'
+import TutorPanel from './components/TutorPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -64,7 +64,7 @@ onUnmounted(() => {
             学习
           </div>
         </div>
-        <nav class="nav-desktop">
+        <nav class="nav-main">
           <template v-if="workspace === 'track'">
             <router-link to="/track/kanban" class="nav-link" :class="{ active: route.path === '/track/kanban' }">看板</router-link>
             <router-link to="/track/list" class="nav-link" :class="{ active: route.path === '/track/list' }">列表</router-link>
@@ -81,27 +81,17 @@ onUnmounted(() => {
       <CountdownBar v-if="workspace === 'track'" :items="upcoming" />
     </header>
 
-    <main class="main">
-      <router-view />
+    <main class="main" :class="{ 'main-learn': workspace === 'learn' }">
+      <div class="main-content">
+        <router-view />
+      </div>
+      <!-- 学习区右侧常驻 AI 助教栏：随路由切换不销毁，切到投递区隐藏但保留对话 -->
+      <TutorPanel v-show="workspace === 'learn'" />
     </main>
-
-    <!-- 移动端底部导航：展示当前工作区的子页面 -->
-    <nav class="nav-mobile">
-      <template v-if="workspace === 'track'">
-        <router-link to="/track/kanban" class="nav-link">看板</router-link>
-        <router-link to="/track/list" class="nav-link">列表</router-link>
-        <router-link to="/track/stats" class="nav-link">统计</router-link>
-      </template>
-      <template v-else>
-        <router-link to="/learn/reviews" class="nav-link">复盘</router-link>
-        <router-link to="/learn/knowledge" class="nav-link">学习</router-link>
-      </template>
-    </nav>
 
     <AppFormDrawer v-model="store.formDrawerOpen" :editing="store.editingApp" />
     <DetailDrawer :app-id="store.detailId" @close="store.detailId = null" />
     <SourceIngestDialog />
-    <TutorDrawer v-if="workspace === 'learn'" />
   </div>
 </template>
 
@@ -138,28 +128,17 @@ body {
   background: #fff; color: #1f2d3d;
   box-shadow: 0 2px 8px rgba(31, 45, 61, 0.16);
 }
-.nav-desktop { display: flex; gap: 4px; flex: 1; }
+.nav-main { display: flex; gap: 4px; flex: 1; }
 .nav-link {
   text-decoration: none; color: #606266; padding: 6px 14px; border-radius: 6px; font-size: 15px;
 }
 .nav-link.active { color: #409eff; background: #ecf5ff; font-weight: 600; }
 .header-inner .el-button { margin-left: auto; }
 
-.main { max-width: 1600px; margin: 0 auto; padding: 16px 24px; padding-bottom: 72px; }
+.main { max-width: 1600px; margin: 0 auto; padding: 16px 24px; }
+/* 学习区：内容 + 右侧助教栏分栏 */
+.main-learn { display: flex; gap: 16px; align-items: flex-start; }
+.main-content { flex: 1; min-width: 0; }
 
-.nav-mobile { display: none; }
 
-@media (max-width: 768px) {
-  .nav-desktop, .brand { display: none; }
-  .header-inner { justify-content: center; gap: 12px; }
-  .header-inner .el-button { margin-left: 0; }
-  .nav-mobile {
-    display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
-    background: #fff; box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.08);
-  }
-  .nav-mobile .nav-link {
-    flex: 1; text-align: center; padding: 10px 0; font-size: 14px; color: #909399;
-  }
-  .nav-mobile .nav-link.active { color: #409eff; font-weight: 600; }
-}
 </style>

@@ -58,10 +58,4 @@ watch([scope, status, channel, keyword], () => {
 
 <style scoped>
 .filter-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-@media (max-width: 768px) {
-  .filter-bar { gap: 6px; }
-  .filter-bar .el-radio-group { width: 100%; }
-  .filter-bar .el-radio-group :deep(.el-radio-button) { flex: 1; }
-  .filter-bar .el-select, .filter-bar .el-input { width: calc(50% - 3px) !important; }
-}
 </style>

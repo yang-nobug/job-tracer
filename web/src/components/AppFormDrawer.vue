@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { reactive, ref, watch, computed } from 'vue'
-import { ElMessage } from 'element-plus'
-import { api } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { api, ApiError } from '../api'
 import { bumpData } from '../store'
 import { STATUS_LABEL_LIST, DEFAULT_CHANNELS, type Application, type Resume, type Status } from '../types'
 import ResumePicker from './ResumePicker.vue'
+import ApplicationImportDialog, { type ImportChoice } from './ApplicationImportDialog.vue'
+import { isCalendarDate, isClockTime, IMPORT_FIELDS, type ImportDraft } from '../../../shared/application-import'
 
 const props = defineProps<{ modelValue: boolean; editing: Application | null }>()
 const emit = defineEmits<(e: 'update:modelValue', v: boolean) => void>()
@@ -14,6 +16,7 @@ interface FormState {
   position: string
   status: Status
   applied_at: string | null
+  applied_time: string | null
   channel: string
   location: string
   resume_id: number | null
@@ -26,7 +29,7 @@ interface FormState {
 
 function emptyForm(): FormState {
   return {
-    company: '', position: '', status: 'unsent', applied_at: null,
+    company: '', position: '', status: 'unsent', applied_at: null, applied_time: null,
     channel: '官网', location: '', resume_id: null,
     jd_link: '', jd_text: '', contact_name: '', contact_info: '', notes: ''
   }
@@ -34,6 +37,55 @@ function emptyForm(): FormState {
 
 const form = reactive<FormState>(emptyForm())
 const saving = ref(false)
+const importDialogOpen = ref(false)
+const importDialog = ref<InstanceType<typeof ApplicationImportDialog>>()
+const importDraft = ref<ImportDraft | null>(null)
+const importConfirmed = ref(false)
+const importManual = ref(false)
+const formSession = ref(0)
+const manuallyEdited = new Set<keyof FormState>()
+const autoFilled = new Set<keyof FormState>()
+let applying = false
+let committedImport: string | undefined
+watch(() => ({ ...form }), (value, previous) => {
+  if (applying) return
+  for (const key of Object.keys(value) as (keyof FormState)[]) if (value[key] !== previous[key]) manuallyEdited.add(key)
+  importConfirmed.value = false
+}, { flush: 'sync' })
+
+function applyImport(choice: ImportChoice) {
+  const oldId = importDraft.value?.id
+  if (oldId && oldId !== choice.draft.id) void api.delete(`/application-imports/${oldId}`).catch(() => {})
+  importDraft.value = choice.draft
+  importManual.value = choice.manual
+  importConfirmed.value = false
+  const skipped: string[] = []
+  applying = true
+  try {
+    if (!choice.manual) {
+      for (const key of IMPORT_FIELDS) {
+        const target = (key === 'summary' ? 'notes' : key) as keyof FormState
+        if (manuallyEdited.has(target)) { if (choice.values[key]) skipped.push(target); continue }
+        const value = choice.values[key]
+        if (value || autoFilled.has(target) || target === 'channel') {
+          // All extracted fields are text; null/missing values must not keep stale AI output.
+          Object.assign(form, { [target]: value || (target === 'status' ? 'unsent' : '') })
+          autoFilled.add(target)
+        }
+      }
+      for (const [key, value] of [['applied_at', choice.date], ['applied_time', choice.time]] as const) {
+        if (manuallyEdited.has(key)) { if (value) skipped.push(key); continue }
+        form[key] = value; autoFilled.add(key)
+      }
+      if (choice.date && !choice.values.status && !manuallyEdited.has('status') && choice.draft.analysis?.extraction.fields.status.state === 'missing') form.status = 'applied'
+    }
+  } finally { applying = false }
+  ElMessage.success(skipped.length ? '已填入识别结果；你手动修改过的字段已保留，请逐项核对' : '材料已保留，请核对表单与实际投递时间后保存')
+}
+function changeStatus(status: Status) {
+  // Only an explicit user action can clear the date; model assignments never trigger this.
+  if (status === 'unsent') { form.applied_at = null; form.applied_time = null }
+}
 
 // 公司自动补全（选中已有公司带出默认值）
 interface CompanyMeta { company: string; location: string | null; channel: string | null; count: number }
@@ -60,14 +112,6 @@ function onCompanySelected(item: CompanyMeta): void {
   if ((!form.channel || form.channel === '官网') && item.channel) form.channel = item.channel
 }
 
-// 状态联动：进入已投递及之后状态时默认填今天
-watch(
-  () => form.status,
-  (s) => {
-    if (s !== 'unsent' && !form.applied_at) form.applied_at = todayStr()
-  }
-)
-
 function todayStr(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
@@ -79,18 +123,26 @@ watch(
   () => props.modelValue,
   (open) => {
     if (open) {
+      applying = true
+      importDraft.value = null; importConfirmed.value = false; importManual.value = false
+      committedImport = undefined; manuallyEdited.clear(); autoFilled.clear(); formSession.value++
       if (props.editing) {
         const e = props.editing
         Object.assign(form, {
           company: e.company, position: e.position, status: e.status,
-          applied_at: e.applied_at, channel: e.channel || '', location: e.location || '',
+          applied_at: e.applied_at, applied_time: e.applied_time ?? null, channel: e.channel || '', location: e.location || '',
           resume_id: e.resume_id, jd_link: e.jd_link || '', jd_text: e.jd_text || '',
           contact_name: e.contact_name || '', contact_info: e.contact_info || '', notes: e.notes || ''
         })
       } else {
         Object.assign(form, emptyForm())
       }
+      applying = false
       loadCompanies()
+    } else {
+      importDialogOpen.value = false
+      importDialog.value?.dispose(committedImport)
+      importDraft.value = null
     }
   }
 )
@@ -98,29 +150,41 @@ watch(
 const title = computed(() => (props.editing ? `编辑：${props.editing.company}` : '新增投递'))
 
 async function save(): Promise<void> {
+  if (saving.value) return
   if (!form.company.trim() || !form.position.trim()) {
     ElMessage.warning('公司和职位为必填项')
     return
   }
+  if (form.status !== 'unsent' && (!form.applied_at || !isCalendarDate(form.applied_at))) { ElMessage.warning('请填写实际投递日期；系统不会自动使用今天'); return }
+  if (form.applied_time && !isClockTime(form.applied_time)) { ElMessage.warning('时刻格式应为 HH:mm 或 HH:mm:ss'); return }
+  if (importDraft.value && !importConfirmed.value) { ElMessage.warning('请先勾选确认：已核对字段和投递时间'); return }
   saving.value = true
   try {
     const payload = {
       company: form.company, position: form.position, status: form.status,
-      applied_at: form.applied_at, channel: form.channel, location: form.location,
+      applied_at: form.applied_at, applied_time: form.applied_time || null, channel: form.channel, location: form.location,
       resume_id: form.resume_id, jd_link: form.jd_link, jd_text: form.jd_text,
-      contact_name: form.contact_name, contact_info: form.contact_info, notes: form.notes
+      contact_name: form.contact_name, contact_info: form.contact_info, notes: form.notes,
+      import_id: importDraft.value?.id, import_confirmed: importConfirmed.value, import_manual: importManual.value
     }
     if (props.editing) {
       await api.put(`/applications/${props.editing.id}`, payload)
       ElMessage.success('已保存')
     } else {
-      await api.post('/applications', payload)
+      try { await api.post('/applications', payload) }
+      catch (err) {
+        if (!(err instanceof ApiError) || !Array.isArray(err.body.duplicates)) throw err
+        const records = err.body.duplicates as { id: number; company: string; position: string }[]
+        await ElMessageBox.confirm(`已有相似记录：${records.map(record => `#${record.id} ${record.company} · ${record.position}`).join('；')}。仍要新增一条吗？`, '重复记录提醒', { type: 'warning', confirmButtonText: '确认新增', cancelButtonText: '返回检查' })
+        await api.post('/applications', { ...payload, allow_duplicate: true })
+      }
+      committedImport = importDraft.value?.id
       ElMessage.success('已记录')
     }
     bumpData()
     emit('update:modelValue', false)
   } catch (err) {
-    ElMessage.error((err as Error).message)
+    if (err !== 'cancel' && err !== 'close') ElMessage.error((err as Error).message)
   } finally {
     saving.value = false
   }
@@ -207,14 +271,15 @@ const channels = computed(() => DEFAULT_CHANNELS)
     destroy-on-close
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <div class="jd-parse-bar" @click="openJdDialog">
-      <span class="jd-parse-icon">📄</span>
+    <div v-if="!editing" class="jd-parse-bar" @click="importDialogOpen = true">
+      <span class="jd-parse-icon">📷</span>
       <span class="jd-parse-text">
-        <b>粘贴 JD 智能解析</b>
-        <small>自动识别公司 / 职位 / 地点，帮你填好基本信息</small>
+        <b>招聘信息智能录入</b>
+        <small>上传一张或多张截图，也可粘贴招聘文字；提取字段和真实投递时间</small>
       </span>
-      <el-button size="small" plain>去解析</el-button>
+      <el-button size="small" plain @click.stop="importDialogOpen = true">{{ importDraft ? '查看材料' : '添加材料' }}</el-button>
     </div>
+    <el-alert v-if="importDraft" type="info" :closable="false" :title="`已关联 ${importDraft.sources.length} 份原始材料。识别结果只是草稿，保存前请核对。`" />
 
     <el-form label-width="82px" label-position="left" class="app-form">
       <div class="form-grid">
@@ -232,12 +297,16 @@ const channels = computed(() => DEFAULT_CHANNELS)
           <el-input v-model="form.position" placeholder="职位名" />
         </el-form-item>
         <el-form-item label="状态">
-          <el-select v-model="form.status" style="width: 100%">
+          <el-select v-model="form.status" style="width: 100%" @change="changeStatus">
             <el-option v-for="s in STATUS_LABEL_LIST" :key="s.value" :label="s.label" :value="s.value" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.status !== 'unsent'" label="投递日期" required>
           <el-date-picker v-model="form.applied_at" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+          <el-button link type="primary" @click="form.applied_at = todayStr()">明确使用今天</el-button>
+        </el-form-item>
+        <el-form-item v-if="form.status !== 'unsent'" label="投递时刻">
+          <el-input v-model="form.applied_time" placeholder="可选，如 14:35 或 14:35:20" clearable />
         </el-form-item>
         <el-form-item label="渠道">
           <el-select v-model="form.channel" allow-create filterable clearable placeholder="选择或输入" style="width: 100%">
@@ -267,6 +336,7 @@ const channels = computed(() => DEFAULT_CHANNELS)
         </el-form-item>
       </div>
     </el-form>
+    <el-checkbox v-if="importDraft" v-model="importConfirmed">我已核对公司、职位、状态及实际投递时间，确认保存</el-checkbox>
 
     <template #footer>
       <div class="dialog-footer">
@@ -286,6 +356,7 @@ const channels = computed(() => DEFAULT_CHANNELS)
         <el-button type="primary" :loading="aiParsing" @click="parseJdAi">✨ AI 解析</el-button>
       </template>
     </el-dialog>
+    <ApplicationImportDialog :key="formSession" ref="importDialog" v-model="importDialogOpen" :draft="importDraft" @apply="applyImport" />
   </el-dialog>
 </template>
 
@@ -304,8 +375,4 @@ const channels = computed(() => DEFAULT_CHANNELS)
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; }
 .form-grid .span-2 { grid-column: span 2; }
 .dialog-footer { display: flex; justify-content: space-between; align-items: center; width: 100%; }
-@media (max-width: 768px) {
-  .form-grid { grid-template-columns: 1fr; }
-  .form-grid .span-2 { grid-column: auto; }
-}
 </style>

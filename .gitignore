@@ -4,3 +4,6 @@ server/public/
 backups/
 config.json
 *.log
+.venv-agent/
+__pycache__/
+*.pyc

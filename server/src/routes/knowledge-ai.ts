@@ -1,11 +1,18 @@
 import { Router } from 'express'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import type { Request, Response } from 'express'
 import { db, KNOWLEDGE_IMAGES_DIR, now } from '../db.js'
-import { chat, extractJson, tutorModel, visionArkModel, type ChatContent } from '../ai.js'
+import { AiError, completeChat, completeStructured, tutorModel, visionArkModel, type ChatContent } from '../ai.js'
+import {
+  ANSWER_GENERATION_SCHEMA,
+  KNOWLEDGE_EXTRACTION_SCHEMA,
+  validateAnswerGeneration,
+  validateKnowledgeExtraction
+} from '../ai-contracts.js'
 import { loadPrompt } from '../prompt-loader.js'
-import { KNOWLEDGE_CATEGORIES } from '../types.js'
+import { searchKnowledge, tutorCitations } from '../knowledge-retrieval.js'
 
 // 知识库 AI：拆题 / 生成答案 / 助教对话（需求 3.9.2 / 3.9.4）
 
@@ -16,43 +23,6 @@ const EXTRACT_MAX_TEXT = 10_000
 const ANSWER_BATCH_LIMIT = 5
 const TUTOR_CONTEXT_TOP_N = 5
 
-interface CandidateQuestion {
-  question: string
-  answer?: string
-  category?: string
-}
-
-function validCategory(c: unknown): string {
-  return typeof c === 'string' && KNOWLEDGE_CATEGORIES.includes(c) ? c : '其他'
-}
-
-/** 规整模型拆出的候选题目（过滤空题、修 category） */
-function normalizeQuestions(raw: unknown): CandidateQuestion[] {
-  const list = Array.isArray(raw) ? raw : []
-  const out: CandidateQuestion[] = []
-  for (const item of list) {
-    const question = String(item?.question ?? '').trim()
-    if (!question) continue
-    const answer = String(item?.answer ?? '').trim()
-    out.push({
-      question: question.slice(0, 500),
-      answer: answer || undefined,
-      category: validCategory(item?.category)
-    })
-  }
-  return out
-}
-
-/** 规整模型拆出的元信息（company/position/round） */
-function normalizeMeta(raw: { company?: unknown; position?: unknown; round?: unknown }) {
-  const clean = (v: unknown, max = 100) => String(v ?? '').trim().slice(0, max)
-  return {
-    company: clean(raw.company),
-    position: clean(raw.position),
-    round: clean(raw.round, 20)
-  }
-}
-
 // 文本面经 -> 元信息 + 候选题目列表
 knowledgeAiRouter.post('/ai/knowledge/extract-text', async (req: Request, res: Response) => {
   const text = (req.body?.text ?? '').trim()
@@ -61,15 +31,19 @@ knowledgeAiRouter.post('/ai/knowledge/extract-text', async (req: Request, res: R
     return
   }
   try {
-    const output = await chat([
-      { role: 'system', content: loadPrompt('knowledge-extract.system.md') },
-      { role: 'user', content: text.slice(0, EXTRACT_MAX_TEXT) }
-    ])
-    const parsed = extractJson<{ company?: unknown; position?: unknown; round?: unknown; questions?: unknown }>(output)
-    res.json({ ...normalizeMeta(parsed), questions: normalizeQuestions(parsed.questions) })
+    const { value } = await completeStructured([
+      { role: 'system', content: `${loadPrompt('knowledge-extract.system.md')}\n\nJSON Schema:\n${JSON.stringify(KNOWLEDGE_EXTRACTION_SCHEMA)}` },
+      { role: 'user', content: `<untrusted_interview_material>\n${text.slice(0, EXTRACT_MAX_TEXT)}\n</untrusted_interview_material>` }
+    ], {
+      task: 'knowledgeExtract',
+      schemaName: 'knowledge_extraction',
+      schema: KNOWLEDGE_EXTRACTION_SCHEMA,
+      validate: validateKnowledgeExtraction
+    })
+    res.json(value)
   } catch (err) {
     console.error('[extract-text]', (err as Error).message)
-    res.status(502).json({ message: (err as Error).message })
+    res.status(err instanceof AiError ? err.statusCode : 502).json({ message: (err as Error).message })
   }
 })
 
@@ -78,19 +52,20 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
   const imageId = Number(req.body?.image_id)
   const img = imageId
     ? (db.prepare('SELECT * FROM knowledge_images WHERE id = ?').get(imageId) as
-        | { stored_name: string; filename: string }
+        | { stored_name: string; inference_stored_name: string | null; inference_mime: string | null; filename: string }
         | undefined)
     : undefined
   if (!img) {
     res.status(404).json({ message: '截图不存在' })
     return
   }
-  const filePath = path.join(KNOWLEDGE_IMAGES_DIR, img.stored_name)
+  const inferenceName = img.inference_stored_name ?? img.stored_name
+  const filePath = path.join(KNOWLEDGE_IMAGES_DIR, inferenceName)
   if (!existsSync(filePath)) {
     res.status(404).json({ message: '截图文件已丢失' })
     return
   }
-  const ext = path.extname(img.stored_name).toLowerCase()
+  const ext = path.extname(inferenceName).toLowerCase()
   const types: Record<string, string> = {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
@@ -98,7 +73,7 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
     '.webp': 'image/webp',
     '.bmp': 'image/bmp'
   }
-  const dataUrl = `data:${types[ext] ?? 'image/png'};base64,${readFileSync(filePath).toString('base64')}`
+  const dataUrl = `data:${img.inference_mime ?? types[ext] ?? 'image/png'};base64,${readFileSync(filePath).toString('base64')}`
   try {
     // 当前模型不支持视觉时，自动找列表里的视觉模型兜底
     const visionModel = visionArkModel()
@@ -110,19 +85,23 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
       { type: 'image_url', image_url: { url: dataUrl } },
       { type: 'text', text: '请从这张面试题截图中拆出题目列表。' }
     ]
-    const output = await chat(
+    const { value } = await completeStructured(
       [
-        { role: 'system', content: loadPrompt('knowledge-extract.system.md') },
+        { role: 'system', content: `${loadPrompt('knowledge-extract.system.md')}\n\nJSON Schema:\n${JSON.stringify(KNOWLEDGE_EXTRACTION_SCHEMA)}` },
         { role: 'user', content }
       ],
-      90_000,
-      { model: visionModel }
+      {
+        task: 'knowledgeExtract',
+        model: visionModel,
+        schemaName: 'knowledge_extraction',
+        schema: KNOWLEDGE_EXTRACTION_SCHEMA,
+        validate: validateKnowledgeExtraction
+      }
     )
-    const parsed = extractJson<{ company?: unknown; position?: unknown; round?: unknown; questions?: unknown }>(output)
-    res.json({ ...normalizeMeta(parsed), questions: normalizeQuestions(parsed.questions) })
+    res.json(value)
   } catch (err) {
     console.error('[extract-image]', (err as Error).message)
-    res.status(502).json({ message: (err as Error).message })
+    res.status(err instanceof AiError ? err.statusCode : 502).json({ message: (err as Error).message })
   }
 })
 
@@ -149,18 +128,19 @@ knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, re
   }
   try {
     const questionList = todo.map(i => ({ id: i.id, question: i.question }))
-    const output = await chat(
+    const { value } = await completeStructured(
       [
-        { role: 'system', content: loadPrompt('knowledge-answer.system.md') },
-        { role: 'user', content: JSON.stringify(questionList) }
+        { role: 'system', content: `${loadPrompt('knowledge-answer.system.md')}\n\nJSON Schema:\n${JSON.stringify(ANSWER_GENERATION_SCHEMA)}` },
+        { role: 'user', content: `<untrusted_questions>\n${JSON.stringify(questionList)}\n</untrusted_questions>` }
       ],
-      180_000
+      {
+        task: 'answerGenerate',
+        schemaName: 'knowledge_answers',
+        schema: ANSWER_GENERATION_SCHEMA,
+        validate: result => validateAnswerGeneration(result, todo.map(item => item.id))
+      }
     )
-    // 答案是 markdown，塞 JSON 里模型很容易转义出错，改用 @@@ID:x@@@ 分隔符解析
-    const byId = parseAnswerBlocks(output)
-    if (byId.size === 0) {
-      throw new Error('模型没有按格式返回答案，请重试')
-    }
+    const byId = new Map(value.answers.map(answer => [answer.id, answer.answer]))
     const update = db.prepare('UPDATE knowledge_items SET answer=?, updated_at=? WHERE id=?')
     const ts = now()
     const tx = db.transaction(() => {
@@ -173,28 +153,31 @@ knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, re
     const refreshed = db
       .prepare(`SELECT id, question, answer, category, mastery FROM knowledge_items WHERE id IN (${placeholders})`)
       .all(...ids)
-    res.json({ items: refreshed, generated: byId.size })
+    res.json({ items: refreshed, generated: value.answers.length })
   } catch (err) {
     console.error('[generate-answers]', (err as Error).message)
-    res.status(502).json({ message: (err as Error).message })
+    res.status(err instanceof AiError ? err.statusCode : 502).json({ message: (err as Error).message })
   }
 })
 
-/** 解析模型输出的 @@@ID:x@@@ 答案块，容忍格式瑕疵 */
-function parseAnswerBlocks(output: string): Map<number, string> {
-  const byId = new Map<number, string>()
-  const re = /@@@ID[:：]?\s*(\d+)\s*@@@([\s\S]*?)(?=@@@ID[:：]?\s*\d+\s*@@@|$)/g
-  for (const m of output.matchAll(re)) {
-    const id = Number(m[1])
-    const answer = m[2].trim()
-    if (id && answer) byId.set(id, answer)
-  }
-  return byId
-}
-
 // 助教对话：历史存 SQLite（tutor_sessions/tutor_messages），带最近 N 条上下文 + 知识库检索
-// 上下文窗口简单版：只带最近 20 条消息，更早的不进 prompt（会话全文仍在库里可回看）
-const TUTOR_HISTORY_WINDOW = 20
+const TUTOR_HISTORY_SCAN = 40
+const TUTOR_HISTORY_CHAR_BUDGET = 12_000
+const TUTOR_CONTEXT_CHAR_BUDGET = 10_000
+
+function boundedHistory(sessionId: number): { role: 'user' | 'assistant'; content: string }[] {
+  const newest = db
+    .prepare(`SELECT role, content FROM tutor_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?`)
+    .all(sessionId, TUTOR_HISTORY_SCAN) as { role: 'user' | 'assistant'; content: string }[]
+  const selected: typeof newest = []
+  let used = 0
+  for (const message of newest) {
+    if (selected.length && used + message.content.length > TUTOR_HISTORY_CHAR_BUDGET) break
+    selected.push(message)
+    used += message.content.length
+  }
+  return selected.reverse()
+}
 
 knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response) => {
   const content = typeof req.body?.content === 'string' ? req.body.content.trim() : ''
@@ -202,71 +185,135 @@ knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response
     res.status(422).json({ message: 'content 不能为空' })
     return
   }
-  let sessionId = Number(req.body?.session_id) || 0
+  const requestedSessionId = Number(req.body?.session_id) || 0
+  const suppliedRequestId = typeof req.body?.request_id === 'string' ? req.body.request_id.trim() : ''
+  const requestId = /^[a-zA-Z0-9_-]{8,128}$/.test(suppliedRequestId) ? suppliedRequestId : randomUUID()
   const ts = now()
 
   try {
-    // 会话：没有就建（标题取首条消息前 20 字），传了则校验存在
-    if (!sessionId) {
-      const created = db
-        .prepare(`INSERT INTO tutor_sessions (title, created_at, updated_at) VALUES (?, ?, ?)`)
-        .run(content.slice(0, 20), ts, ts)
-      sessionId = Number(created.lastInsertRowid)
-    } else if (!db.prepare('SELECT id FROM tutor_sessions WHERE id = ?').get(sessionId)) {
-      res.status(404).json({ message: '会话不存在，请新开对话' })
+    const completed = db
+      .prepare(`SELECT id, session_id, content FROM tutor_messages WHERE request_id = ? AND role = 'assistant'`)
+      .get(requestId) as { id: number; session_id: number; content: string } | undefined
+    if (completed) {
+      res.json({
+        session_id: completed.session_id,
+        assistant_message_id: completed.id,
+        reply: completed.content,
+        citations: tutorCitations(completed.id),
+        contextCount: 0,
+        request_id: requestId,
+        replayed: true
+      })
       return
     }
 
-    // 用户消息落库，再取上下文窗口内的历史（含刚落库的这条）
-    db.prepare(`INSERT INTO tutor_messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)`).run(sessionId, content, ts)
-    const history = db
-      .prepare(`SELECT role, content FROM tutor_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?`)
-      .all(sessionId, TUTOR_HISTORY_WINDOW)
-      .reverse() as { role: 'user' | 'assistant'; content: string }[]
+    if (requestedSessionId && !db.prepare('SELECT id FROM tutor_sessions WHERE id = ?').get(requestedSessionId)) {
+      res.status(404).json({ message: '会话不存在，请新开对话' })
+      return
+    }
+    const history = requestedSessionId ? boundedHistory(requestedSessionId) : []
 
-    // 检索知识库：对当前问题做关键词匹配打分
-    const keywords = Array.from(
-      new Set(
-        content
-          .split(/[\s，。？！、,.?!；;：:（）()\-/\\]+/)
-          .map(w => w.trim())
-          .filter(w => w.length >= 2)
-      )
-    ).slice(0, 12)
-    const context = keywords.length
-      ? db
-        .prepare(
-          `SELECT question, IFNULL(answer,'') AS answer, category, mastery FROM knowledge_items
-           WHERE ${keywords.map(() => "(question LIKE ? OR IFNULL(answer,'') LIKE ?)").join(' OR ')}
-           ORDER BY mastery ASC, updated_at DESC`
-        )
-        .all(...keywords.flatMap(k => [`%${k}%`, `%${k}%`] as const))
-        .map(
-          (row: { question: string; answer: string; category: string; mastery: number }) =>
-            `【${row.category}｜掌握度${row.mastery}】${row.question}\n${row.answer || '（还没有答案）'}`
-        )
-        .slice(0, TUTOR_CONTEXT_TOP_N)
-    : []
-
-    const systemPrompt =
-      loadPrompt('learn-tutor.system.md') +
-      (context.length
-        ? `\n\n---\n知识库参考条目（与用户问题相关的已有记录，回答时可结合）：\n${context.join('\n\n')}`
-        : '')
-
-    const reply = await chat(
-      [{ role: 'system', content: systemPrompt }, ...history],
-      120_000,
-      { model: tutorModel() || undefined } // 助教专用模型（可在助教栏切换），其他 AI 功能不受影响
+    const retrieval = searchKnowledge(content, { limit: TUTOR_CONTEXT_TOP_N * 2 })
+    const context: {
+      item_id: number; source_id: number | null; category: string; mastery: number
+      company: string; position: string; round: string; question: string; answer: string; score: number
+    }[] = []
+    let contextChars = 0
+    for (const item of retrieval.items) {
+      const candidate = {
+        item_id: item.id,
+        source_id: item.sourceId,
+        category: item.category,
+        mastery: item.mastery,
+        company: item.company,
+        position: item.position,
+        round: item.round,
+        question: item.question,
+        answer: item.answer.slice(0, 2500),
+        score: item.score
+      }
+      const size = JSON.stringify(candidate).length
+      if (context.length && contextChars + size > TUTOR_CONTEXT_CHAR_BUDGET) break
+      context.push(candidate)
+      contextChars += size
+      if (context.length >= TUTOR_CONTEXT_TOP_N) break
+    }
+    const citedContext = context.map((item, index) => ({ ref: `K${index + 1}`, ...item }))
+    const serializedContext = JSON.stringify(citedContext)
+    const userMessage = context.length
+      ? `<knowledge_context>\n${serializedContext}\n</knowledge_context>\n\n<question>\n${content}\n</question>`
+      : `<question>\n${content}\n</question>`
+    const completion = await completeChat(
+      [{ role: 'system', content: loadPrompt('learn-tutor.system.md') }, ...history, { role: 'user', content: userMessage }],
+      { task: 'tutor', model: tutorModel() || undefined }
     )
+    const referenced = new Set(Array.from(completion.content.matchAll(/\[K(\d+)\]/g), match => `K${Number(match[1])}`))
+    const usedCitations = citedContext.filter(item => referenced.has(item.ref))
 
-    // 回复落库 + 会话活跃时间前移
-    db.prepare(`INSERT INTO tutor_messages (session_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)`).run(sessionId, reply, now())
-    db.prepare('UPDATE tutor_sessions SET updated_at=? WHERE id=?').run(now(), sessionId)
+    // 只有模型成功后，才在一个事务中写入完整问答；失败不会污染历史。
+    const save = db.transaction(() => {
+      let sessionId = requestedSessionId
+      if (!sessionId) {
+        const created = db
+          .prepare(`INSERT INTO tutor_sessions (title, created_at, updated_at) VALUES (?, ?, ?)`)
+          .run(content.slice(0, 20), ts, ts)
+        sessionId = Number(created.lastInsertRowid)
+      }
+      db.prepare(`INSERT INTO tutor_messages (session_id, role, content, created_at, request_id) VALUES (?, 'user', ?, ?, ?)`).run(sessionId, content, ts, requestId)
+      const assistant = db.prepare(`INSERT INTO tutor_messages (session_id, role, content, created_at, request_id) VALUES (?, 'assistant', ?, ?, ?)`).run(sessionId, completion.content, now(), requestId)
+      const assistantMessageId = Number(assistant.lastInsertRowid)
+      const insertCitation = db.prepare(`INSERT INTO tutor_message_citations
+        (message_id, knowledge_item_id, citation_key, rank, score) VALUES (?, ?, ?, ?, ?)`)
+      usedCitations.forEach(item => {
+        insertCitation.run(assistantMessageId, item.item_id, item.ref, Number(item.ref.slice(1)), item.score)
+      })
+      db.prepare(`INSERT INTO knowledge_retrieval_runs
+        (request_id, session_id, assistant_message_id, query_hash, mode, result_ids_json, duration_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          requestId,
+          sessionId,
+          assistantMessageId,
+          retrieval.queryHash,
+          retrieval.mode,
+          JSON.stringify(citedContext.map(item => item.item_id)),
+          retrieval.durationMs,
+          ts
+        )
+      db.prepare('UPDATE tutor_sessions SET updated_at=? WHERE id=?').run(now(), sessionId)
+      return { sessionId, assistantMessageId }
+    })
 
-    res.json({ session_id: sessionId, reply, contextCount: context.length })
+    let saved: { sessionId: number; assistantMessageId: number }
+    try {
+      saved = save()
+    } catch (saveError) {
+      const replay = db
+        .prepare(`SELECT id, session_id, content FROM tutor_messages WHERE request_id = ? AND role = 'assistant'`)
+        .get(requestId) as { id: number; session_id: number; content: string } | undefined
+      if (!replay) throw saveError
+      res.json({
+        session_id: replay.session_id,
+        assistant_message_id: replay.id,
+        reply: replay.content,
+        citations: tutorCitations(replay.id),
+        contextCount: context.length,
+        request_id: requestId,
+        replayed: true
+      })
+      return
+    }
+
+    res.json({
+      session_id: saved.sessionId,
+      assistant_message_id: saved.assistantMessageId,
+      reply: completion.content,
+      citations: tutorCitations(saved.assistantMessageId),
+      contextCount: context.length,
+      retrievalMode: retrieval.mode,
+      request_id: requestId
+    })
   } catch (err) {
     console.error('[tutor]', (err as Error).message)
-    res.status(502).json({ message: (err as Error).message })
+    res.status(err instanceof AiError ? err.statusCode : 502).json({ message: (err as Error).message, request_id: requestId })
   }
 })

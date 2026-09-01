@@ -1,6 +1,6 @@
 # job-tracer 技术实施方案
 
-> 对应需求基线 REQUIREMENTS.md v1.4 · 方案 v4（2026-08-19，新增录音复盘管道）
+> 对应需求基线 REQUIREMENTS.md v1.7 · 方案 v5（2026-09-01，新增 LangGraph 面试准备 Agent）
 
 ## 1. 技术栈
 
@@ -11,8 +11,9 @@
 | 图表 | ECharts (vue-echarts) | 漏斗图 + 柱状图 + 饼图 |
 | 拖拽 | vuedraggable（Sortable.js） | 看板卡片拖拽改状态 |
 | Markdown | markdown-it | 复盘文档渲染预览 |
-| 后端 | Node.js 24 + Express 5 + TypeScript | 本机 Node v24.19.0 |
-| 数据库 | SQLite + better-sqlite3 | 同步 API、零配置；安装失败则降级 Node 内置 `node:sqlite` |
+| 后端 | Node.js 24 + Express 5 + TypeScript | `.node-version` / `.nvmrc` 固定 24.20.0 |
+| Agent 编排 | Python 3.11～3.12 + FastAPI + LangGraph | 受控 StateGraph、SQLite checkpoint、人工审核中断 |
+| 数据库 | SQLite + better-sqlite3 | 同步 API、零配置；启动预检发现 ABI 不匹配时自动 rebuild |
 | 文件上传 | multer | 简历 PDF/Word 上传 |
 | 脚本 | concurrently + tsx | 开发时前后端并行 |
 
@@ -23,11 +24,15 @@ job-tracer/
 ├── package.json              # 根：统一 scripts 与依赖
 ├── start.bat                 # 双击启动：起服务 + 打开浏览器
 ├── backup.bat                # 双击备份：复制 data 目录加日期后缀
+├── agent_service/            # FastAPI + LangGraph 面试准备编排服务
+├── scripts/                  # Agent 预检和跨进程 mock E2E
 ├── PLAN.md / REQUIREMENTS.md
 ├── server/
 │   ├── src/
 │   │   ├── index.ts          # Express 入口，仅监听 127.0.0.1:3210
 │   │   ├── db.ts             # better-sqlite3 初始化 + 建表
+│   │   ├── prep-agent-service.ts # Agent 运行、上下文、校验和事务写入
+│   │   ├── prep-agent-runtime.ts # Python 子进程生命周期与控制客户端
 │   │   ├── jd-parser.ts      # JD 正则解析
 │   │   ├── review-file.ts    # 复盘 md 模板生成/读写
 │   │   ├── oss.ts            # 阿里云 OSS 上传/签名 URL/删除（录音转写中转）
@@ -41,6 +46,7 @@ job-tracer/
 │   │       └── stats.ts
 │   └── data/                 # 全部用户数据（gitignore）
 │       ├── job-tracer.db     # SQLite 单文件
+│       ├── prep_agent_checkpoints.db # LangGraph checkpoint
 │       ├── uploads/          # 简历文件
 │       ├── recordings/       # 面试录音音频
 │       └── reviews/          # 面试复盘 md 文档
@@ -58,7 +64,8 @@ job-tracer/
     │       ├── AppFormDrawer.vue   # 录入/编辑抽屉（含多图/文字招聘材料智能录入）
     │       ├── DetailDrawer.vue    # 详情 + 时间线
     │       ├── EventTimeline.vue
-    │       ├── InterviewPanel.vue  # 面试日程/复盘/准备清单
+│       ├── InterviewPanel.vue  # 面试日程/复盘/准备清单
+    │       ├── InterviewPrepAgentDialog.vue # 生成、审核、编辑并确认计划
     │       ├── ReviewEditor.vue    # md 编辑框 + 预览
     │       ├── ResumePicker.vue    # 简历选择/上传
     │       ├── CountdownBar.vue    # 面试倒计时条
@@ -299,13 +306,30 @@ data/reviews/2026-08-20-某公司-一面.md
 | POST | `/ai/knowledge/extract-text` | `{ text }`（≤1 万字）-> `{ questions: [{question, answer?, category}] }`；自带答案的保留 |
 | POST | `/ai/knowledge/extract-image` | multipart 单图 -> 同上；多张由前端逐张调用后合并为一个候选列表（≤9 张） |
 | POST | `/ai/knowledge/generate-answers` | `{ ids: [...] }` -> 逐条生成答案落库并返回更新条目；有答案的跳过 |
-| POST | `/ai/knowledge/tutor` | `{ messages: [{role, content}] }` -> `{ reply }`；服务端按关键词检索知识库 top-N 条目注入上下文 |
+| POST | `/ai/knowledge/tutor` | `{ session_id?, content, request_id }` -> `{ session_id, reply }`；服务端按关键词检索知识库 top-N 条目注入上下文，请求 ID 保证重试幂等 |
 
-- AI 接口全部走现有 `ai.ts` 的方舟封装；未配置 config.json 时返回明确错误，前端禁用入口
-- 图片输入用 chat completions 的 `image_url`（base64 data URL）；**开工前先实测** doubao-seed-2-0-mini 是否支持图片输入，不支持则在 config.json 增加可选 `visionModel` 字段单独指定视觉模型
+- AI 接口全部走统一 `ai.ts` 方舟客户端；按 `ark.tasks` 配置模型、超时、最大输出和输出模式，统一检查完整输出、有限重试、错误清理及结构化结果校验
+- 图片输入用 chat completions 的 `image_url`（base64 data URL）；模型必须在 `ark.models` 显式声明 `vision: true`。原图本地留档，AI 只读取浏览器生成的最长边不超过 2048 像素 JPEG 推理副本
 - 提示词外置：`prompts/knowledge-extract.system.md`（拆题+分类，JSON 输出）、`prompts/knowledge-answer.system.md`（按题生成 markdown 答案）、`prompts/learn-tutor.system.md`（助教风格）
 
 错误约定：422 返回 `{ message }`，前端统一 toast。
+
+### LangGraph 面试准备 Agent（需求 3.7.4）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/prep-agent/runs` | 创建运行，校验 AI 配置和同场面试并发任务后异步执行 |
+| GET | `/prep-agent/runs/:id` | 获取状态、步骤、计划、警告和 token 指标 |
+| GET | `/prep-agent/interviews/:id/runs` | 获取一场面试的历史运行 |
+| GET | `/prep-agent/runs/:id/events` | SSE 推送状态和步骤变化 |
+| POST | `/prep-agent/runs/:id/resume` | 提交 `approve`、`revise` 或带编辑计划的确认动作 |
+| POST | `/prep-agent/runs/:id/cancel` | 取消尚未完成的运行 |
+
+- Express 是唯一对外和业务数据边界；Python 不直接访问 `job-tracer.db`，只调用带环回地址和内部密钥保护的有限接口
+- Graph 固定执行校验、上下文加载、岗位画像、查询规划、混合检索、差距分析、计划生成、审查、至多一次自动修订和人工审核
+- 所有模型调用通过现有 `completeStructured`，继续执行 Schema 校验、有限修复、任务级配置和 `ai_runs` 观测
+- `interrupt()` 前持久化可编辑计划；批准时校验输入快照、总时长、重复任务和证据引用，并由 Express 事务批量写入 checklist
+- Python 服务按需启动并监听随机本机端口；`start.bat` 管理独立 `.venv-agent`，环境不可用时只停用 Agent
 
 ### 录音复盘管道（需求 3.9.5 学习二期）
 
@@ -317,21 +341,21 @@ data/reviews/2026-08-20-某公司-一面.md
 | POST | `/recordings/:id/retry` | 失败重试：有转写全文则从分析阶段续跑，否则整条重跑 |
 | DELETE | `/recordings/:id` | 删记录 + 本地音频文件（已生成的复盘 md 和面经保留） |
 
-**后台管道**（服务端内存态任务，不阻塞 HTTP）：
+**后台管道**（HTTP 异步启动，关键阶段和分段结果持久化）：
 
 ```
 本地音频 -> (ffmpeg 可选转码) -> 传阿里云 OSS 私有桶 -> 生成 1 小时签名 URL
   -> 提交方舟大模型录音识别标准版（audio.url = 签名 URL）
   -> 轮询查询（10s 间隔，上限 30 分钟；20000001/2=处理中，20000000=完成）
   -> 删除 OSS 临时文件 -> 转写全文入库
-  -> 大模型分析（复盘 md + 题目列表）
+  -> 短转写直接分析；长转写稳定分段并逐段持久化提取，再合并去重
   -> writeReviewFile 覆盖该面试的复盘 md（复盘只来源于录音）
   -> 自动创建面经（owner=mine, source_type=audio, 关联 application_id）+ 题目批量入库
 ```
 
 - ASR 接口：`POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit` / `query`；`X-Api-Resource-Id: volc.seedasr.auc`（2.0）；`X-Api-Request-Id` 为 UUID 任务号；音频 ≤512MB，支持 raw/wav/mp3/ogg；开启 `enable_itn` + `enable_punc` + `enable_ddc`
 - 鉴权两种模式兼容：新版控制台 `X-Api-Key` 单 key；旧版 `X-Api-App-Key + X-Api-Access-Key`
-- 分析提示词外置 `prompts/recording-analysis.system.md`：输入转写全文 + 公司/岗位/轮次；输出用分隔符格式（沿用生成答案的防转义经验）：`@@@REVIEW@@@` 包 markdown 复盘（沿用被问的问题/自我评价/改进点结构）+ `@@@QUESTIONS@@@` 包题目 JSON 数组（question/answer=我当时回答的要点/category）
+- 分析提示词外置 `recording-analysis.system.md`、`recording-chunk.system.md` 和 `recording-merge.system.md`；输出均经运行时 Schema 校验并在格式失败时最多修复一次。失败重试会复用转写、已完成分段和最终分析结果；服务启动时把中断任务标记为可重试
 - config.json 新增两段（照旧 gitignore）：`asr: { apiKey? , appId?+accessToken?, resourceId }`、`oss: { accessKeyId, accessKeySecret, bucket, region }`；缺配置时接口返回明确错误
 
 ## 5. 页面与交互要点
@@ -345,7 +369,7 @@ data/reviews/2026-08-20-某公司-一面.md
 - **简历预览**：PDF 用 `<iframe>` 直读 `/api/resumes/:id/file`；Word 提示下载
 - **统计**：漏斗/环节条形/周趋势/饼图 2x2 + 数字卡片，空数据给引导
 - **学习页（需求 3.9.3）**：顶部「他人面经 / 我的面试」切换；双视图：按题目（列表+分类/掌握度/关键词筛选，答案默认收起点击展开）/ 按面经（面经卡片展开题目）；录入流程：粘贴文本或传截图（≤9 张）-> AI 候选列表（可改分类、默认全选）-> 勾选入库 -> 对无答案条目批量「生成答案」；掌握度一键三档切换
-- **AI 助教（需求 3.9.4）**：学习页右侧抽屉，多轮对话，回答自动带知识库相关条目上下文；会话内存态，刷新清空；未配 key 禁用
+- **AI 助教（需求 3.9.4）**：学习页右侧抽屉，多轮对话；知识上下文经 FTS5 trigram/BM25 + LIKE 混合召回、确定性重排和重复题折叠，回答用 `[K1]` 标记实际引用并链接来源，👍/👎 反馈回流排序；会话持久化到 SQLite，成功后事务保存完整问答，失败不污染历史
 
 ## 6. start.bat / backup.bat
 
@@ -393,16 +417,16 @@ npm start
 
 | 风险 | 对策 |
 |---|---|
-| better-sqlite3 原生模块 Windows 编译失败 | 降级 Node 内置 `node:sqlite`（API 略改，封装在 db.ts 内） |
+| better-sqlite3 原生模块与 Node ABI 不匹配 | `start.bat` 固定检查 Node 24.x 和 ABI，自动执行 `npm rebuild better-sqlite3`，失败时给出明确环境提示 |
 | Word 在线预览浏览器不支持 | 需求已约定：Word 提供下载即可 |
 | 磁盘上的复盘 md 与删除的面试脱钩成孤儿文件 | 删除面试时 md 保留（用户可能自己写过内容），备份时统一收纳；不做自动删 |
 | doubao-seed-2-0-mini 不支持图片输入 | config.json 加可选 `visionModel` 单独指定视觉模型；再不行降级为「截图只留底、提取仅文本」 |
 | 长截图/口语化面经识别质量差 | 提示词外置可随时迭代；识别失败明确提示不静默丢弃 |
-| tutor 上下文过长超 token 限制 | 知识库检索只注入 top-N（默认 5）相关条目，按问题+答案关键词 LIKE 匹配 |
+| tutor 上下文过长或资料不相关 | 混合检索只注入重排后的 top-N（默认 5），按字符预算截断；固定集持续监测 Recall@5/MRR，引用和反馈用于排查与改进 |
 | 批量生成答案耗时长 | 前端按钮 loading + 逐条生成进度提示；单批上限 20 条 |
 | 录音是 m4a/aac 等不支持的格式且机器未装 ffmpeg | 上传接口明确报错提示安装 ffmpeg 或自行转成 mp3；检测到 ffmpeg 则服务端自动转码 |
 | OSS / ASR 未配置或欠费 | 各阶段失败原因落库（recordings.error），失败可一键重试，不静默丢弃 |
-| 长录音转写耗时数分钟 | 后台异步任务 + 前端 3s 轮询状态；服务重启丢内存态任务则靠「重试」恢复 |
+| 长录音转写耗时数分钟 | 后台异步任务 + 前端 3s 轮询分段进度；转写、分段和最终分析均落库，服务重启后可续跑 |
 | 复盘 md 被 AI 结果覆盖 | 产品约定：复盘只来源于录音，覆盖即预期；转写全文与生成的复盘均在 recordings 留底 |
 
 ## 10. 后续可扩展（对应需求文档第 6 节，本期不做）

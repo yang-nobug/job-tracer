@@ -92,6 +92,80 @@ export interface Interview {
   checklist?: ChecklistItem[]
 }
 
+export type PrepAgentStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_review'
+  | 'committing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface PrepAgentEvidence {
+  ref: string
+  type: 'knowledge_item' | 'review' | 'mastery' | 'application' | 'interview'
+  title: string
+  excerpt: string
+  source_id?: number | null
+  item_id?: number
+  score?: number
+  company?: string
+  position?: string
+  round?: string
+}
+
+export interface PrepPlanItem {
+  title: string
+  category: 'knowledge' | 'project' | 'coding' | 'communication' | 'mock'
+  priority: 'high' | 'medium' | 'low'
+  estimated_minutes: number
+  reason: string
+  evidence_refs: string[]
+  success_criteria: string
+}
+
+export interface PrepPlan {
+  summary: string
+  items: PrepPlanItem[]
+}
+
+export interface PrepAgentStep {
+  id: number
+  node: string
+  attempt: number
+  status: 'running' | 'completed' | 'failed'
+  summary: string | null
+  duration_ms: number | null
+  error_type: string | null
+  created_at: string
+  finished_at: string | null
+}
+
+export interface PrepAgentRun {
+  id: string
+  request_id: string
+  application_id: number
+  interview_id: number
+  status: PrepAgentStatus
+  goal: string
+  constraints: { available_minutes: number; focus: string[] }
+  current_node: string | null
+  plan: PrepPlan | null
+  evidence: PrepAgentEvidence[]
+  warnings: string[]
+  error_type: string | null
+  error_message: string | null
+  model_calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  steps?: PrepAgentStep[]
+  persisted_items?: Array<PrepPlanItem & { id: number; checklist_id: number; sort: number }>
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
 export interface ApplicationDetail extends Application {
   materials?: import('../../shared/application-import').ImportDraft[]
   events: AppEvent[]
@@ -225,6 +299,10 @@ export interface RecordingRow {
   status: RecordingStatus
   error: string | null
   knowledge_source_id: number | null
+  analysis_stage: string
+  attempts: number
+  chunk_total: number
+  chunk_done: number
   created_at: string
   updated_at: string
   round: string
@@ -254,4 +332,18 @@ export interface TutorMessage {
   role: 'user' | 'assistant'
   content: string
   created_at: string
+  citations?: TutorCitation[]
+  feedback?: -1 | 1 | null
+}
+
+export interface TutorCitation {
+  ref: string
+  item_id: number
+  source_id: number | null
+  question: string
+  company: string
+  position: string
+  round: string
+  rank: number
+  score: number
 }

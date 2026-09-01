@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { loadArkConfig, extractJson, type ChatContent } from './ai.js'
+import { AiError, completeStructured, isAiTaskEnabled, loadArkConfig, resolveAiTask, type ChatContent, type ChatMessage } from './ai.js'
 import { loadPrompt } from './prompt-loader.js'
 import { EXTRACTION_SCHEMA, IMPORT_FIELDS, IMPORT_LIMITS, validateExtraction, type ExtractionResult, type ImportSource, type Evidence, type ImportAnalysis } from '../../shared/application-import.js'
 import { ImportError, getImport, imageDataUrl, findDuplicates } from './application-materials.js'
@@ -7,12 +7,14 @@ import { resolveAppliedDate } from './application-dates.js'
 
 export function extractionConfig() {
   const config = loadArkConfig()
-  if (!config) return { available: false, model: null, imageModel: null, maxImages: IMPORT_LIMITS.images }
-  const selected = config.recruitment?.model
-  const model = selected ? config.models.find(item => item.id === selected) : config.models.find(item => item.id === config.defaultModel)
-  const imageModel = selected ? (model?.vision === true ? model : undefined) : (model?.vision === true ? model : config.models.find(item => item.vision === true))
-  const max = config.recruitment?.maxImages ?? IMPORT_LIMITS.images
-  return { available: !!model, model: model?.id ?? null, imageModel: imageModel?.id ?? null, maxImages: Number.isInteger(max) ? Math.max(1, Math.min(IMPORT_LIMITS.images, max)) : IMPORT_LIMITS.images }
+  if (!config || !isAiTaskEnabled('applicationImport')) return { available: false, model: null, imageModel: null, maxImages: IMPORT_LIMITS.images }
+  const resolved = resolveAiTask('applicationImport')
+  const hasTaskModel = !!config.tasks.applicationImport?.model
+  const imageModel = resolved?.modelEntry.vision === true
+    ? resolved.modelEntry
+    : hasTaskModel ? undefined : config.models.find(item => item.vision === true)
+  const max = resolved?.maxImages ?? IMPORT_LIMITS.images
+  return { available: !!resolved, model: resolved?.model ?? null, imageModel: imageModel?.id ?? null, maxImages: Math.max(1, Math.min(IMPORT_LIMITS.images, max)) }
 }
 
 const normalized = (text: string) => text.normalize('NFKC').replace(/\s/g, '').toLowerCase()
@@ -57,40 +59,6 @@ export function verifyEvidence(result: ExtractionResult, sources: ImportSource[]
   return result
 }
 
-async function completion(body: Record<string, unknown>, signal: AbortSignal): Promise<string> {
-  const config = loadArkConfig()
-  if (!config) throw new ImportError('尚未配置 AI 服务')
-  // Bound transient retries. Neither raw provider errors nor credentials are exposed.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let response: Response
-    try {
-      response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST', headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body), signal
-      })
-    } catch (error) {
-      if (signal.aborted) throw new ImportError('识别已取消或超时，材料仍保留，可重试', 504)
-      if (!attempt) continue
-      throw new ImportError('模型服务连接失败，请检查网络后重试', 502)
-    }
-    if (!response.ok) {
-      await response.body?.cancel()
-      if (!attempt && (response.status === 429 || response.status >= 500)) {
-        await new Promise(resolve => setTimeout(resolve, 1000)); signal.throwIfAborted(); continue
-      }
-      throw new ImportError(response.status === 400 ? '模型拒绝了请求，请检查图片数量及 recruitment 参数是否被该模型支持' : response.status === 401 || response.status === 403 ? '模型鉴权失败，请检查 API Key 和模型权限' : `模型请求失败（${response.status}），请稍后重试`, 502)
-    }
-    const payload = await response.json() as { id?: unknown; choices?: { finish_reason?: unknown; message?: { content?: unknown } }[] }
-    const choice = Array.isArray(payload.choices) ? payload.choices[0] : undefined
-    if (choice?.finish_reason !== 'stop' || typeof choice?.message?.content !== 'string' || !choice.message.content.trim()) {
-      throw new ImportError('模型未完整输出结果（可能被截断或拒绝），请减少材料后重试', 502)
-    }
-    if (choice.message.content.length > 100000) throw new ImportError('模型输出过长，请减少材料后重试', 502)
-    return choice.message.content
-  }
-  throw new ImportError('模型请求失败', 502)
-}
-
 export async function analyzeImport(id: string, cancel: AbortSignal): Promise<ImportAnalysis> {
   const draft = getImport(id)
   const config = loadArkConfig()
@@ -106,24 +74,22 @@ export async function analyzeImport(id: string, cancel: AbortSignal): Promise<Im
     if (source.kind === 'image') content.push({ type: 'image_url', image_url: { url: imageDataUrl(id, source.id) } })
   }
   content.push({ type: 'text', text: '材料已提供完毕。请按系统规则输出 JSON。' })
-  const messages = [{ role: 'system', content: `${prompt}\n\nJSON Schema:\n${JSON.stringify(EXTRACTION_SCHEMA)}` }, { role: 'user', content }]
-  const body: Record<string, unknown> = { model, stream: false, max_tokens: 8192, messages }
-  const options = config.recruitment
-  if (typeof options?.temperature === 'number' && options.temperature >= 0 && options.temperature <= 2) body.temperature = options.temperature
-  if (options?.thinking === 'disabled' || options?.thinking === 'enabled') body.thinking = { type: options.thinking }
-  if (options?.outputMode === 'json_schema') body.response_format = { type: 'json_schema', json_schema: { name: 'application_extraction', strict: true, schema: EXTRACTION_SCHEMA } }
-  else if (options?.outputMode === 'json_object') body.response_format = { type: 'json_object' }
-  const signal = AbortSignal.any([cancel, AbortSignal.timeout(120_000)])
+  const messages: ChatMessage[] = [
+    { role: 'system', content: `${prompt}\n\nJSON Schema:\n${JSON.stringify(EXTRACTION_SCHEMA)}` },
+    { role: 'user', content }
+  ]
   const started = Date.now()
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const output = await completion(body, signal)
-    let extraction: ExtractionResult
-    try { extraction = verifyEvidence(validateExtraction(extractJson<unknown>(output)), draft.sources) }
-    catch (error) {
-      if (attempt) throw new ImportError('模型结果格式或证据仍不符合要求，请重新识别或手动录入', 502)
-      messages.push({ role: 'user', content: `上次输出未通过校验：${(error as Error).message}。请重新查看同一组材料，仅修正格式和证据，不补造事实，返回完整 JSON。` })
-      continue
-    }
+  try {
+    const structured = await completeStructured(messages, {
+      task: 'applicationImport',
+      model,
+      signal: cancel,
+      schemaName: 'application_extraction',
+      schema: EXTRACTION_SCHEMA,
+      validate: value => verifyEvidence(validateExtraction(value), draft.sources),
+      repairInstruction: error => `上次输出未通过校验：${error.message}。请重新查看同一组材料，仅修正格式和证据，不补造事实，返回完整 JSON。`
+    })
+    const extraction: ExtractionResult = structured.value
     const applied_date = resolveAppliedDate(extraction.date_facts, draft.sources)
     if (extraction.target_state === 'single' && applied_date.state === 'resolved') {
       const status = extraction.fields.status
@@ -134,8 +100,16 @@ export async function analyzeImport(id: string, cancel: AbortSignal): Promise<Im
       }
     }
     const values = Object.fromEntries(IMPORT_FIELDS.map(key => [key, extraction.fields[key].value ?? '']))
-    console.info(`[application-extract] model=${model} duration_ms=${Date.now() - started} attempts=${attempt + 1}`)
-    return { extraction, applied_date, duplicates: values.company && values.position ? findDuplicates({ company: values.company, position: values.position, location: values.location, jd_link: values.jd_link }) : [], model, prompt_version: `1-${createHash('sha256').update(prompt).digest('hex').slice(0, 12)}` }
+    console.info(`[application-extract] model=${structured.completion.model} duration_ms=${Date.now() - started} attempts=${structured.attempts}`)
+    return { extraction, applied_date, duplicates: values.company && values.position ? findDuplicates({ company: values.company, position: values.position, location: values.location, jd_link: values.jd_link }) : [], model: structured.completion.model, prompt_version: `1-${createHash('sha256').update(prompt).digest('hex').slice(0, 12)}` }
+  } catch (error) {
+    if (error instanceof ImportError) throw error
+    if (error instanceof AiError) {
+      const message = error.kind === 'validation'
+        ? '模型结果格式或证据仍不符合要求，请重新识别或手动录入'
+        : error.message
+      throw new ImportError(message, error.statusCode)
+    }
+    throw new ImportError('识别失败，请稍后重试', 502)
   }
-  throw new ImportError('识别失败', 502)
 }

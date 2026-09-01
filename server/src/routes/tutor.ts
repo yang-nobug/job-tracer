@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { db, now } from '../db.js'
 import { loadArkConfig, tutorModel, setTutorModel } from '../ai.js'
+import { tutorCitationsByMessage } from '../knowledge-retrieval.js'
 
 // AI 助教：会话管理（列表/加载/重命名/删除）+ 助教专用模型切换
 // 对话生成（含知识库上下文检索）在 knowledge-ai.ts 的 /ai/knowledge/tutor
@@ -53,8 +54,47 @@ tutorRouter.get('/sessions/:id', (req: Request, res: Response) => {
   }
   const messages = db
     .prepare('SELECT id, role, content, created_at FROM tutor_messages WHERE session_id = ? ORDER BY id')
-    .all(req.params.id)
-  res.json({ session, messages })
+    .all(req.params.id) as { id: number; role: 'user' | 'assistant'; content: string; created_at: string }[]
+  const assistantIds = messages.filter(message => message.role === 'assistant').map(message => message.id)
+  const citations = tutorCitationsByMessage(assistantIds)
+  const feedbackRows = assistantIds.length
+    ? db.prepare(`SELECT message_id, value FROM tutor_message_feedback WHERE message_id IN (${assistantIds.map(() => '?').join(',')})`).all(...assistantIds) as { message_id: number; value: -1 | 1 }[]
+    : []
+  const feedback = new Map(feedbackRows.map(row => [row.message_id, row.value]))
+  res.json({
+    session,
+    messages: messages.map(message => ({
+      ...message,
+      citations: citations[message.id] ?? [],
+      feedback: feedback.get(message.id) ?? null
+    }))
+  })
+})
+
+tutorRouter.put('/messages/:id/feedback', (req: Request, res: Response) => {
+  const messageId = Number(req.params.id)
+  const value = Number(req.body?.value)
+  const message = Number.isInteger(messageId)
+    ? db.prepare("SELECT id FROM tutor_messages WHERE id=? AND role='assistant'").get(messageId)
+    : undefined
+  if (!message) {
+    res.status(404).json({ message: '助教回答不存在' })
+    return
+  }
+  if (![0, -1, 1].includes(value)) {
+    res.status(422).json({ message: 'value 只能是 -1、0 或 1' })
+    return
+  }
+  if (value === 0) {
+    db.prepare('DELETE FROM tutor_message_feedback WHERE message_id=?').run(messageId)
+    res.json({ message_id: messageId, feedback: null })
+    return
+  }
+  const ts = now()
+  db.prepare(`INSERT INTO tutor_message_feedback(message_id,value,created_at,updated_at)
+    VALUES (?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
+    .run(messageId, value, ts, ts)
+  res.json({ message_id: messageId, feedback: value })
 })
 
 // 重命名

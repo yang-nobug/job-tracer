@@ -9,10 +9,12 @@ import AppFormDrawer from './components/AppFormDrawer.vue'
 import DetailDrawer from './components/DetailDrawer.vue'
 import SourceIngestDialog from './components/SourceIngestDialog.vue'
 import TutorPanel from './components/TutorPanel.vue'
+import AiPrivacyDialog from './components/AiPrivacyDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const upcoming = ref<UpcomingInterview[]>([])
+const privacyOpen = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 
 // 双工作区（需求 3.10）：投递跟踪 / 学习成长
@@ -75,8 +77,11 @@ onUnmounted(() => {
             <router-link to="/learn/knowledge" class="nav-link" :class="{ active: route.path.startsWith('/learn/knowledge') }">学习</router-link>
           </template>
         </nav>
-        <el-button v-if="workspace === 'track'" type="primary" round @click="openCreateForm()">+ 新增投递</el-button>
-        <el-button v-else type="primary" round @click="openKnowledgeIngest">+ 录入面经</el-button>
+        <div class="header-actions">
+          <el-button text @click="privacyOpen = true">AI 数据说明</el-button>
+          <el-button v-if="workspace === 'track'" type="primary" round @click="openCreateForm()">+ 新增投递</el-button>
+          <el-button v-else type="primary" round @click="openKnowledgeIngest">+ 录入面经</el-button>
+        </div>
       </div>
       <CountdownBar v-if="workspace === 'track'" :items="upcoming" />
     </header>
@@ -92,6 +97,7 @@ onUnmounted(() => {
     <AppFormDrawer v-model="store.formDrawerOpen" :editing="store.editingApp" />
     <DetailDrawer :app-id="store.detailId" @close="store.detailId = null" />
     <SourceIngestDialog />
+    <AiPrivacyDialog v-model="privacyOpen" />
   </div>
 </template>
 
@@ -133,7 +139,8 @@ body {
   text-decoration: none; color: #606266; padding: 6px 14px; border-radius: 6px; font-size: 15px;
 }
 .nav-link.active { color: #409eff; background: #ecf5ff; font-weight: 600; }
-.header-inner .el-button { margin-left: auto; }
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.header-actions .el-button + .el-button { margin-left: 0; }
 
 .main { max-width: 1600px; margin: 0 auto; padding: 16px 24px; }
 /* 学习区：内容 + 右侧助教栏分栏 */

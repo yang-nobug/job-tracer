@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { IMPORT_FIELDS, IMPORT_LABELS, IMPORT_LIMITS, type ImportDraft, type ImportField, type Evidence } from '../../../shared/application-import'
 import { STATUS_LABELS } from '../types'
+import { createInferenceImage } from '../utils/inference-image'
 
 const props = defineProps<{ modelValue: boolean; draft: ImportDraft | null }>()
 export interface ImportChoice { draft: ImportDraft; values: Partial<Record<ImportField, string>>; date: string | null; time: string | null; manual: boolean }
@@ -79,7 +80,10 @@ async function upload(signal: AbortSignal): Promise<ImportDraft> {
   const form = new FormData()
   form.append('text', text.value)
   form.append('metadata', JSON.stringify({ text_date: textDate.value, image_dates: files.value.map(file => file.date) }))
-  files.value.forEach(({ file }) => form.append('images', file))
+  for (const { file } of files.value) {
+    form.append('images', file)
+    form.append('inference_images', await createInferenceImage(file))
+  }
   const previous = staged.value
   const draft = await request<ImportDraft>('', { method: 'POST', body: form, signal })
   if (previous && previous.id !== props.draft?.id) void discard(previous.id)
@@ -182,7 +186,7 @@ function valueLabel(key: ImportField, value: string) { return key === 'status' ?
           </div>
         </div>
         <p class="hint">截图日期不是投递日期。不知道就留空；系统不会把上传日期当成截图日期。</p>
-        <el-alert type="info" :closable="false" title="点击识别会将这组文字和图片发送至已配置的 AI 服务。建议先裁掉无关个人信息。原始材料保存到本机，不会自动投递或打开招聘软件。" />
+        <el-alert type="info" :closable="false" title="点击识别会将文字和最长边不超过 2048 像素的图片副本发送至已配置的 AI 服务。原图只保存在本机用于核对；建议仍先裁掉无关个人信息。" />
       </section>
       <section class="review">
         <h3>2. 核对字段和原文依据</h3>

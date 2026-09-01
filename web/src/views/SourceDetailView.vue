@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
-import { store } from '../store'
+import { store, askTutor } from '../store'
 import {
   MASTERY_LABELS,
   MASTERY_TAG_TYPES,
@@ -244,6 +244,7 @@ async function removeItem(itemId: number): Promise<void> {
               {{ MASTERY_LABELS[item.mastery as Mastery] }}
             </span>
             <el-tag v-if="!item.answer" size="small" type="info" effect="plain" round>无答案</el-tag>
+            <el-button size="small" link title="把这道题带进 AI 助教" @click.stop="askTutor(item.question)">🎓 助教</el-button>
             <el-button link type="danger" size="small" @click.stop="removeItem(item.id)">删</el-button>
             <span class="src-toggle">{{ expanded.has(item.id) ? '▲' : '▼' }}</span>
           </div>

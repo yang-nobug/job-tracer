@@ -126,8 +126,4 @@ const cards = computed(() => [
 .stat-value { font-size: 30px; font-weight: 700; }
 .stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
 .charts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-@media (max-width: 768px) {
-  .cards { grid-template-columns: repeat(2, 1fr); }
-  .charts { grid-template-columns: 1fr; }
-}
 </style>

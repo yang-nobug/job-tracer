@@ -9,8 +9,10 @@ export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads')
 export const REVIEWS_DIR = path.join(DATA_DIR, 'reviews')
 export const KNOWLEDGE_IMAGES_DIR = path.join(DATA_DIR, 'knowledge_images')
 export const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings')
+export const AUTOMATION_DIR = path.join(DATA_DIR, 'automation')          // agent 运行截图等产物
+export const APPLICATION_MATERIALS_DIR = path.join(DATA_DIR, 'application_materials')
 
-for (const dir of [DATA_DIR, UPLOADS_DIR, REVIEWS_DIR, KNOWLEDGE_IMAGES_DIR, RECORDINGS_DIR]) {
+for (const dir of [DATA_DIR, UPLOADS_DIR, REVIEWS_DIR, KNOWLEDGE_IMAGES_DIR, RECORDINGS_DIR, AUTOMATION_DIR, APPLICATION_MATERIALS_DIR]) {
   mkdirSync(dir, { recursive: true })
 }
 
@@ -133,6 +135,88 @@ CREATE TABLE IF NOT EXISTS recordings (
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rec_iv ON recordings(interview_id);
+
+CREATE TABLE IF NOT EXISTS tutor_sessions (      -- AI 助教会话（需求 3.9.4）
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  title           TEXT NOT NULL DEFAULT '新对话',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tutor_messages (      -- 助教对话消息
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      INTEGER NOT NULL REFERENCES tutor_sessions(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK(role IN ('user','assistant')),
+  content         TEXT NOT NULL,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tm_session ON tutor_messages(session_id);
+
+CREATE TABLE IF NOT EXISTS settings (                -- 运行时可变的杂项设置（如当前 AI 模型）
+  key             TEXT PRIMARY KEY,
+  value           TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automation_runs (        -- agent 运行记录（一次总目标 = 一条）
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  goal            TEXT NOT NULL,                    -- 总目标（启动时注入的自然语言指令）
+  status          TEXT NOT NULL DEFAULT 'running',  -- running/done/aborted/failed/waiting_login
+  steps           INTEGER NOT NULL DEFAULT 0,
+  summary         TEXT,                             -- 模型 done 时汇报的总结
+  error           TEXT,
+  trigger         TEXT NOT NULL DEFAULT 'manual',   -- manual/schedule
+  started_at      TEXT NOT NULL,
+  finished_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ar_status ON automation_runs(status);
+
+CREATE TABLE IF NOT EXISTS automation_logs (        -- 每一步的截图/动作/推理（前端回放审计）
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id          INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+  step            INTEGER NOT NULL,
+  screenshot      TEXT,                             -- AUTOMATION_DIR 内的文件名
+  tool_name       TEXT,
+  tool_args       TEXT,                             -- JSON
+  thought         TEXT,                             -- 模型这一步的分析摘要
+  result          TEXT,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_al_run ON automation_logs(run_id);
+
+CREATE TABLE IF NOT EXISTS automation_counters (    -- 每日动作计数（硬限制依据）
+  date            TEXT PRIMARY KEY,
+  actions         INTEGER NOT NULL DEFAULT 0        -- click/type/scroll 等执行次数
+);
+`)
+
+// 数据迁移：automation_logs 增加 url 列（记录每步页面地址，排查页面异常跳转用）
+try { db.exec('ALTER TABLE automation_logs ADD COLUMN url TEXT') } catch { /* 列已存在 */ }
+
+// Additive migration: existing application dates and records remain unchanged.
+if (!(db.pragma('table_info(applications)') as { name: string }[]).some(column => column.name === 'applied_time')) {
+  db.exec('ALTER TABLE applications ADD COLUMN applied_time TEXT')
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS application_imports (
+  id TEXT PRIMARY KEY,
+  application_id INTEGER REFERENCES applications(id) ON DELETE CASCADE,
+  analysis_json TEXT,
+  confirmed_json TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_application_import_app ON application_imports(application_id);
+CREATE TABLE IF NOT EXISTS application_materials (
+  import_id TEXT NOT NULL REFERENCES application_imports(id) ON DELETE CASCADE,
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('text', 'image')),
+  text TEXT,
+  filename TEXT,
+  stored_name TEXT,
+  mime TEXT,
+  captured_at TEXT,
+  PRIMARY KEY (import_id, id)
+);
 `)
 
 // 数据迁移：曾短暂把轮次状态合并为 interviewing，按最新面试记录恢复轮次（无记录则归为一面）
@@ -144,6 +228,15 @@ db.prepare(`UPDATE applications SET status = CASE
 
 export function now(): string {
   return new Date().toISOString()
+}
+
+export function getSetting(key: string): string | null {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+  return row ? row.value : null
+}
+
+export function setSetting(key: string, value: string): void {
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
 }
 
 export function today(): string {

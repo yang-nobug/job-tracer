@@ -3,7 +3,7 @@ import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import type { Request, Response } from 'express'
 import { db, KNOWLEDGE_IMAGES_DIR, now } from '../db.js'
-import { chat, extractJson, type ChatContent } from '../ai.js'
+import { chat, extractJson, tutorModel, visionArkModel, type ChatContent } from '../ai.js'
 import { loadPrompt } from '../prompt-loader.js'
 import { KNOWLEDGE_CATEGORIES } from '../types.js'
 
@@ -100,6 +100,12 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
   }
   const dataUrl = `data:${types[ext] ?? 'image/png'};base64,${readFileSync(filePath).toString('base64')}`
   try {
+    // 当前模型不支持视觉时，自动找列表里的视觉模型兜底
+    const visionModel = visionArkModel()
+    if (!visionModel) {
+      res.status(422).json({ message: '当前模型不支持图片输入，请在模型列表里配一个 vision 模型' })
+      return
+    }
     const content: ChatContent = [
       { type: 'image_url', image_url: { url: dataUrl } },
       { type: 'text', text: '请从这张面试题截图中拆出题目列表。' }
@@ -109,7 +115,8 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
         { role: 'system', content: loadPrompt('knowledge-extract.system.md') },
         { role: 'user', content }
       ],
-      90_000
+      90_000,
+      { model: visionModel }
     )
     const parsed = extractJson<{ company?: unknown; position?: unknown; round?: unknown; questions?: unknown }>(output)
     res.json({ ...normalizeMeta(parsed), questions: normalizeQuestions(parsed.questions) })
@@ -185,34 +192,49 @@ function parseAnswerBlocks(output: string): Map<number, string> {
   return byId
 }
 
-// 助教对话：按最后一条用户消息检索知识库 top-N 注入上下文
-knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response) => {
-  const messages = Array.isArray(req.body?.messages) ? req.body.messages : []
-  const valid = messages.filter(
-    (m: { role?: unknown; content?: unknown }) =>
-      (m?.role === 'user' || m?.role === 'assistant') && typeof m?.content === 'string' && m.content.trim()
-  )
-  if (valid.length === 0 || valid[valid.length - 1].role !== 'user') {
-    res.status(422).json({ message: 'messages 不能为空，且最后一条应为用户消息' })
-    return
-  }
-  if (valid.length > 40) {
-    res.status(422).json({ message: '对话过长，请新开一个对话' })
-    return
-  }
+// 助教对话：历史存 SQLite（tutor_sessions/tutor_messages），带最近 N 条上下文 + 知识库检索
+// 上下文窗口简单版：只带最近 20 条消息，更早的不进 prompt（会话全文仍在库里可回看）
+const TUTOR_HISTORY_WINDOW = 20
 
-  // 检索知识库：对最后一条用户消息做关键词匹配打分
-  const lastUser = (valid as { role: string; content: string }[]).filter(m => m.role === 'user').pop()!
-  const keywords = Array.from(
-    new Set(
-      lastUser.content
-        .split(/[\s，。？！、,.?!；;：:（）()\-/\\]+/)
-        .map(w => w.trim())
-        .filter(w => w.length >= 2)
-    )
-  ).slice(0, 12)
-  const context = keywords.length
-    ? db
+knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response) => {
+  const content = typeof req.body?.content === 'string' ? req.body.content.trim() : ''
+  if (!content) {
+    res.status(422).json({ message: 'content 不能为空' })
+    return
+  }
+  let sessionId = Number(req.body?.session_id) || 0
+  const ts = now()
+
+  try {
+    // 会话：没有就建（标题取首条消息前 20 字），传了则校验存在
+    if (!sessionId) {
+      const created = db
+        .prepare(`INSERT INTO tutor_sessions (title, created_at, updated_at) VALUES (?, ?, ?)`)
+        .run(content.slice(0, 20), ts, ts)
+      sessionId = Number(created.lastInsertRowid)
+    } else if (!db.prepare('SELECT id FROM tutor_sessions WHERE id = ?').get(sessionId)) {
+      res.status(404).json({ message: '会话不存在，请新开对话' })
+      return
+    }
+
+    // 用户消息落库，再取上下文窗口内的历史（含刚落库的这条）
+    db.prepare(`INSERT INTO tutor_messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)`).run(sessionId, content, ts)
+    const history = db
+      .prepare(`SELECT role, content FROM tutor_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?`)
+      .all(sessionId, TUTOR_HISTORY_WINDOW)
+      .reverse() as { role: 'user' | 'assistant'; content: string }[]
+
+    // 检索知识库：对当前问题做关键词匹配打分
+    const keywords = Array.from(
+      new Set(
+        content
+          .split(/[\s，。？！、,.?!；;：:（）()\-/\\]+/)
+          .map(w => w.trim())
+          .filter(w => w.length >= 2)
+      )
+    ).slice(0, 12)
+    const context = keywords.length
+      ? db
         .prepare(
           `SELECT question, IFNULL(answer,'') AS answer, category, mastery FROM knowledge_items
            WHERE ${keywords.map(() => "(question LIKE ? OR IFNULL(answer,'') LIKE ?)").join(' OR ')}
@@ -226,18 +248,23 @@ knowledgeAiRouter.post('/ai/knowledge/tutor', async (req: Request, res: Response
         .slice(0, TUTOR_CONTEXT_TOP_N)
     : []
 
-  const systemPrompt =
-    loadPrompt('learn-tutor.system.md') +
-    (context.length
-      ? `\n\n---\n知识库参考条目（与用户问题相关的已有记录，回答时可结合）：\n${context.join('\n\n')}`
-      : '')
+    const systemPrompt =
+      loadPrompt('learn-tutor.system.md') +
+      (context.length
+        ? `\n\n---\n知识库参考条目（与用户问题相关的已有记录，回答时可结合）：\n${context.join('\n\n')}`
+        : '')
 
-  try {
     const reply = await chat(
-      [{ role: 'system', content: systemPrompt }, ...valid.map((m: { role: string; content: string }) => ({ role: m.role as 'user' | 'assistant', content: m.content }))],
-      120_000
+      [{ role: 'system', content: systemPrompt }, ...history],
+      120_000,
+      { model: tutorModel() || undefined } // 助教专用模型（可在助教栏切换），其他 AI 功能不受影响
     )
-    res.json({ reply, contextCount: context.length })
+
+    // 回复落库 + 会话活跃时间前移
+    db.prepare(`INSERT INTO tutor_messages (session_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)`).run(sessionId, reply, now())
+    db.prepare('UPDATE tutor_sessions SET updated_at=? WHERE id=?').run(now(), sessionId)
+
+    res.json({ session_id: sessionId, reply, contextCount: context.length })
   } catch (err) {
     console.error('[tutor]', (err as Error).message)
     res.status(502).json({ message: (err as Error).message })

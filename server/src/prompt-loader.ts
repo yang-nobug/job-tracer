@@ -18,5 +18,6 @@ export function loadPrompt(filename: string): string {
 }
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => vars[key] ?? match)
+  // \w 匹配不了中文占位符（如 {{公司}}），用 unicode 属性匹配任意文字
+  return template.replace(/\{\{([\p{L}\p{N}_]+)\}\}/gu, (match, key: string) => vars[key] ?? match)
 }

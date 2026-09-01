@@ -1,8 +1,18 @@
 {
   "ark": {
     "apiKey": "填入火山方舟 API Key",
-    "model": "doubao-seed-2-0-mini-260428",
-    "baseUrl": "https://ark.cn-beijing.volces.com/api/v3"
+    "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+    "models": [
+      { "id": "doubao-seed-2-0-mini-260428", "label": "Seed 2.0 mini（快）", "vision": true },
+      { "id": "填入模型ID", "label": "显示名（随便起）", "vision": false }
+    ],
+    "recruitment": {
+      "model": "doubao-seed-2-0-mini-260428",
+      "outputMode": "text",
+      "maxImages": 9,
+      "temperature": 0,
+      "thinking": "disabled"
+    }
   },
   "asr": {
     "apiKey": "填入新版控制台 API Key（旧版控制台改用下面的 appId + accessToken）",

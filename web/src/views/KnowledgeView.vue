@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
-import { store } from '../store'
+import { store, askTutor } from '../store'
 import {
   KNOWLEDGE_CATEGORIES,
   MASTERY_LABELS,
@@ -242,6 +242,7 @@ function openSource(sourceId: number | null): void {
                 >
                   ✨ 生成
                 </el-button>
+                <el-button size="small" link title="把这道题带进 AI 助教" @click.stop="askTutor(item.question)">🎓 助教</el-button>
                 <el-button link type="danger" size="small" @click.stop="removeItem(item)">删</el-button>
                 <span class="kb-toggle">{{ expanded.has(item.id) ? '▲' : '▼' }}</span>
               </div>
@@ -357,7 +358,4 @@ function openSource(sourceId: number | null): void {
 .kb-src-count { font-size: 13px; color: #606266; }
 .kb-src-date { color: #c0c4cc; font-size: 12px; }
 
-@media (max-width: 768px) {
-  .kb-stats { grid-template-columns: repeat(2, 1fr); }
-}
 </style>

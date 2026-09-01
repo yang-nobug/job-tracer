@@ -53,6 +53,7 @@ export interface Application {
   position: string
   status: Status
   applied_at: string | null
+  applied_time: string | null
   channel: string | null
   location: string | null
   resume_id: number | null

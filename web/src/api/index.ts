@@ -1,4 +1,7 @@
 const BASE = '/api'
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public body: Record<string, unknown>) { super(message) }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {
@@ -7,7 +10,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new Error((body as { message?: string }).message || `请求失败 (${res.status})`)
+    throw new ApiError((body as { message?: string }).message || `请求失败 (${res.status})`, res.status, body)
   }
   return body as T
 }

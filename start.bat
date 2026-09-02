@@ -80,13 +80,40 @@ if not "%agent_check_code%"=="0" (
     goto start_app
 )
 set "PREP_AGENT_PYTHON=%CD%\.venv-agent\Scripts\python.exe"
+if not defined PORT set "PORT=3210"
+if not defined PREP_AGENT_PORT set "PREP_AGENT_PORT=3211"
+set "PREP_AGENT_BASE_URL=http://127.0.0.1:%PREP_AGENT_PORT%"
+set "JOB_TRACER_BASE_URL=http://127.0.0.1:%PORT%"
+set "PREP_AGENT_CHECKPOINT_PATH=%CD%\data\prep_agent_checkpoints.db"
+for /f "delims=" %%T in ('node scripts\prep-agent-token.mjs') do set "PREP_AGENT_INTERNAL_TOKEN=%%T"
+if not defined PREP_AGENT_INTERNAL_TOKEN (
+    echo [job-tracer] Could not prepare the Interview Prep Agent token. Other features can still be used.
+    set "PREP_AGENT_DISABLED=1"
+    goto start_app
+)
+set "PREP_AGENT_CONTROL_TOKEN=%PREP_AGENT_INTERNAL_TOKEN%"
+
+node scripts\prep-agent-process.mjs health >nul 2>nul
+if errorlevel 1 (
+    echo [prep-agent] Starting the Python service...
+    set "PREP_AGENT_STARTED_BY_BATCH=1"
+    start "" /b "%PREP_AGENT_PYTHON%" -m uvicorn agent_service.main:app --host 127.0.0.1 --port %PREP_AGENT_PORT% --log-level warning >"%CD%\data\prep-agent.log" 2>&1
+    node scripts\prep-agent-process.mjs wait
+    if errorlevel 1 (
+        echo [prep-agent] Python service did not become ready. See data\prep-agent.log.
+        set "PREP_AGENT_DISABLED=1"
+    )
+) else (
+    echo [prep-agent] Python service is already running.
+)
 
 :start_app
 echo [job-tracer] Starting. Your browser will open automatically...
-start "" cmd /c "timeout /t 2 >nul & start http://localhost:3210"
+if not "%JOB_TRACER_NO_BROWSER%"=="1" start "" cmd /c "timeout /t 2 >nul & start http://localhost:%PORT%"
 call npm.cmd start
 set "start_code=%errorlevel%"
-pause
+if defined PREP_AGENT_STARTED_BY_BATCH node scripts\prep-agent-process.mjs stop >nul 2>nul
+if not "%JOB_TRACER_NO_PAUSE%"=="1" pause
 exit /b %start_code%
 
 :dependency_error

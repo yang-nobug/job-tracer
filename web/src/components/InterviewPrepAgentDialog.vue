@@ -19,7 +19,7 @@ const run = ref<PrepAgentRun | null>(null)
 const loading = ref(false)
 const starting = ref(false)
 const submitting = ref(false)
-const form = reactive({ availableMinutes: 240, focusText: '', goal: '' })
+const form = reactive({ focusText: '', goal: '' })
 const editableSummary = ref('')
 const editableItems = ref<PrepPlanItem[]>([])
 const revisionFeedback = ref('')
@@ -35,7 +35,6 @@ const visible = computed({
 const terminal = computed(() => run.value && ['completed', 'failed', 'cancelled'].includes(run.value.status))
 const waitingReview = computed(() => run.value?.status === 'waiting_review')
 const totalMinutes = computed(() => editableItems.value.reduce((sum, item) => sum + Number(item.estimated_minutes || 0), 0))
-const overBudget = computed(() => totalMinutes.value > (run.value?.constraints.available_minutes ?? form.availableMinutes))
 const evidenceByRef = computed(() => new Map((run.value?.evidence ?? []).map(item => [item.ref, item])))
 
 const stageLabels: Record<string, string> = {
@@ -140,7 +139,6 @@ function resetForNewRun(): void {
   editableItems.value = []
   revisionFeedback.value = ''
   loadedPlanRun.value = ''
-  form.availableMinutes = 240
   form.focusText = ''
   form.goal = props.interview ? `准备 ${props.interview.round}` : ''
 }
@@ -160,7 +158,7 @@ async function startRun(): Promise<void> {
       application_id: props.applicationId,
       interview_id: props.interview.id,
       goal: form.goal.trim() || `准备 ${props.interview.round}`,
-      constraints: { available_minutes: form.availableMinutes, focus },
+      constraints: { focus },
       request_id: requestId()
     })
     acceptRun(next)
@@ -191,10 +189,6 @@ function addItem(): void {
 async function submitDecision(action: 'edit' | 'revise' | 'cancel'): Promise<void> {
   if (!run.value) return
   if (action === 'edit') {
-    if (overBudget.value) {
-      ElMessage.warning('计划总时间超过预算，请先调整')
-      return
-    }
     if (editableItems.value.some(item => !item.title.trim() || !item.success_criteria.trim())) {
       ElMessage.warning('每项任务都需要标题和完成标准')
       return
@@ -248,14 +242,9 @@ onBeforeUnmount(closeSource)
           <el-form-item label="准备目标">
             <el-input v-model="form.goal" maxlength="500" placeholder="例如：准备后天的一面，重点强化项目表达" />
           </el-form-item>
-          <div class="form-row">
-            <el-form-item label="可用时间（分钟）">
-              <el-input-number v-model="form.availableMinutes" :min="30" :max="2880" :step="30" />
-            </el-form-item>
-            <el-form-item label="重点方向（逗号分隔）" class="focus-field">
-              <el-input v-model="form.focusText" placeholder="前端基础，项目表达，算法" />
-            </el-form-item>
-          </div>
+          <el-form-item label="重点方向（逗号分隔，可选）" class="focus-field">
+            <el-input v-model="form.focusText" placeholder="前端基础，项目表达，算法" />
+          </el-form-item>
         </el-form>
         <div class="footer-actions">
           <el-button @click="visible = false">取消</el-button>
@@ -296,8 +285,8 @@ onBeforeUnmount(closeSource)
         />
 
         <template v-if="waitingReview">
-          <div class="budget" :class="{ exceeded: overBudget }">
-            计划 {{ totalMinutes }} 分钟 / 预算 {{ run.constraints.available_minutes }} 分钟
+          <div class="recommended-time">
+            建议学习时长合计 {{ totalMinutes }} 分钟，仅供参考；请以完成学习目标为准
           </div>
           <el-input v-model="editableSummary" type="textarea" :rows="2" maxlength="1000" class="summary-input" />
 
@@ -311,7 +300,7 @@ onBeforeUnmount(closeSource)
                 <el-option label="低" value="low" />
               </el-select>
               <el-input-number v-model="item.estimated_minutes" :min="5" :max="480" :step="5" controls-position="right" />
-              <span class="minutes">分钟</span>
+              <span class="minutes">建议分钟</span>
               <el-button link type="danger" @click="removeItem(index)">删除</el-button>
             </div>
             <div class="plan-meta">
@@ -341,7 +330,7 @@ onBeforeUnmount(closeSource)
           </div>
           <div class="footer-actions">
             <el-button :loading="submitting" @click="submitDecision('cancel')">取消本次运行</el-button>
-            <el-button type="primary" :loading="submitting" :disabled="overBudget" @click="submitDecision('edit')">
+            <el-button type="primary" :loading="submitting" @click="submitDecision('edit')">
               确认并写入清单
             </el-button>
           </div>
@@ -379,7 +368,6 @@ onBeforeUnmount(closeSource)
 <style scoped>
 .prep-agent { min-height: 180px; }
 .start-form { margin-top: 18px; }
-.form-row { display: flex; gap: 18px; }
 .focus-field { flex: 1; }
 .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .run-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -391,8 +379,7 @@ onBeforeUnmount(closeSource)
 .step-dot.failed { background: #f56c6c; }
 .step-dot.running { background: #409eff; }
 .warning { margin: 8px 0; }
-.budget { margin: 14px 0 8px; font-weight: 600; color: #409eff; }
-.budget.exceeded { color: #f56c6c; }
+.recommended-time { margin: 14px 0 8px; font-weight: 600; color: #409eff; }
 .summary-input { margin-bottom: 10px; }
 .plan-item { border: 1px solid #e4e7ed; border-radius: 9px; padding: 10px; margin-bottom: 10px; background: #fff; }
 .plan-item-head { display: flex; align-items: center; gap: 7px; }

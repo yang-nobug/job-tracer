@@ -145,6 +145,17 @@ async def health() -> dict[str, Any]:
     return {"ok": True, "protocol": PROTOCOL_VERSION, "version": __version__}
 
 
+async def exit_process() -> None:
+    await asyncio.sleep(0.2)
+    os._exit(0)
+
+
+@app.post("/shutdown", dependencies=[Depends(control_auth)])
+async def shutdown() -> dict[str, bool]:
+    asyncio.create_task(exit_process())
+    return {"ok": True}
+
+
 @app.post("/runs/{run_id}/start", dependencies=[Depends(control_auth)], status_code=202)
 async def start(run_id: str) -> dict[str, Any]:
     schedule(run_id, invoke_initial(run_id))

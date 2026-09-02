@@ -8,7 +8,7 @@ import {
 import {
   PrepAgentError, buildPrepAgentContext, cancelPrepAgentRun, createPrepAgentRun,
   finishPrepAgentStep, getPrepAgentRunRow, insertPrepAgentStep, listPrepAgentRuns,
-  persistPrepAgentPlan, prepAgentInternalToken, recoverablePrepAgentRuns,
+  parsePrepAgentConstraints, persistPrepAgentPlan, prepAgentInternalToken, recoverablePrepAgentRuns,
   searchPrepAgentEvidence, serializePrepAgentRun, updatePrepAgentRun, validatePrepAgentCreate,
   validatePrepAgentPlanForRun
 } from '../prep-agent-service.js'
@@ -145,7 +145,7 @@ prepAgentRouter.get('/internal/prep-agent/runs/:id/input', (req, res) => {
     application_id: run.application_id,
     interview_id: run.interview_id,
     goal: run.goal,
-    constraints: JSON.parse(run.constraints_json),
+    constraints: parsePrepAgentConstraints(run.constraints_json),
     status: run.status
   })
 })

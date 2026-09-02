@@ -263,6 +263,58 @@ const migrations: Migration[] = [
           ON prep_agent_plan_items(run_id, sort);
       `)
     }
+  },
+  {
+    version: 8,
+    name: 'prep_task_execution',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS prep_task_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          plan_item_id INTEGER NOT NULL UNIQUE REFERENCES prep_agent_plan_items(id) ON DELETE CASCADE,
+          guide_json TEXT,
+          progress_json TEXT NOT NULL DEFAULT '{"steps":[],"checks":[]}',
+          guide_model TEXT,
+          guide_generated_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prep_task_sessions_updated
+          ON prep_task_sessions(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS prep_task_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id INTEGER NOT NULL REFERENCES prep_task_sessions(id) ON DELETE CASCADE,
+          role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+          content TEXT NOT NULL,
+          request_id TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prep_task_messages_session
+          ON prep_task_messages(session_id, id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prep_task_messages_request_role
+          ON prep_task_messages(session_id, request_id, role) WHERE request_id IS NOT NULL;
+      `)
+    }
+  },
+  {
+    version: 9,
+    name: 'prep_task_course_guides',
+    up(db) {
+      db.exec(`
+        ALTER TABLE prep_task_sessions ADD COLUMN guide_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_status TEXT NOT NULL DEFAULT 'idle';
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_stage TEXT;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_progress INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_error TEXT;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_started_at TEXT;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_model_calls INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_prompt_tokens INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_completion_tokens INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE prep_task_sessions ADD COLUMN generation_total_tokens INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE prep_task_sessions ADD COLUMN quality_json TEXT;
+      `)
+    }
   }
 ]
 

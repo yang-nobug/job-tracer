@@ -15,6 +15,7 @@ const PROTOCOL_VERSION = 1
 let nodePort = 3210
 let child: ChildProcess | null = null
 let readyPromise: Promise<void> | null = null
+let launchError: NodeJS.ErrnoException | null = null
 
 export function configurePrepAgentRuntime(port: number): void {
   nodePort = port
@@ -40,6 +41,7 @@ async function health(): Promise<boolean> {
 function launch(): void {
   if (EXTERNAL_SERVICE) return
   if (child && child.exitCode === null) return
+  launchError = null
   const dataDir = process.env.JOB_TRACER_DATA_DIR?.trim()
     ? path.resolve(process.env.JOB_TRACER_DATA_DIR.trim())
     : path.join(PROJECT_ROOT, 'data')
@@ -60,6 +62,11 @@ function launch(): void {
     stdio: ['ignore', 'pipe', 'pipe']
   })
   child = spawned
+  spawned.on('error', error => {
+    launchError = error
+    if (child === spawned) child = null
+    console.error(`[prep-agent] Python 服务无法启动：${error.message}`)
+  })
   spawned.stdout?.on('data', chunk => {
     const message = String(chunk).trim()
     if (message) console.log(`[prep-agent] ${message}`)
@@ -70,7 +77,7 @@ function launch(): void {
   })
   spawned.on('exit', code => {
     if (code && code !== 0) console.error(`[prep-agent] Python 服务退出，code=${code}`)
-    child = null
+    if (child === spawned) child = null
     readyPromise = null
   })
 }
@@ -86,8 +93,12 @@ export async function ensurePrepAgentService(): Promise<void> {
     const deadline = Date.now() + 20_000
     while (Date.now() < deadline) {
       if (await health()) return
+      if (launchError) break
       if (!EXTERNAL_SERVICE && child?.exitCode != null) break
       await new Promise(resolve => setTimeout(resolve, 300))
+    }
+    if (launchError?.code === 'EPERM') {
+      throw new Error('系统拒绝启动面试准备 Agent 子进程（spawn EPERM）。请通过 start.bat 启动项目')
     }
     throw new Error(EXTERNAL_SERVICE
       ? '面试准备 Agent 服务不可用，请检查 PREP_AGENT_BASE_URL'

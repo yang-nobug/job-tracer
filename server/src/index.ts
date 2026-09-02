@@ -15,6 +15,7 @@ import { aiRouter } from './routes/ai.js'
 import { jdParseHandler } from './jd-parser.js'
 import { applicationImportsRouter } from './routes/application-imports.js'
 import { prepAgentRouter } from './routes/prep-agent.js'
+import { prepTasksRouter } from './routes/prep-tasks.js'
 import {
   configurePrepAgentRuntime, recoverPrepAgentRuntimeRun, stopPrepAgentService
 } from './prep-agent-runtime.js'
@@ -42,6 +43,7 @@ app.use('/api', knowledgeAiRouter)
 app.use('/api/recordings', recordingsRouter)
 app.use('/api/tutor', tutorRouter)
 app.use('/api', prepAgentRouter)
+app.use('/api', prepTasksRouter)
 app.post('/api/jd-parse', jdParseHandler)
 
 // 统一错误处理（422/500 -> JSON）

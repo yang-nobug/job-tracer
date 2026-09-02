@@ -26,7 +26,7 @@ class FakeClient:
             "application_id": 1,
             "interview_id": 2,
             "goal": "准备一面",
-            "constraints": {"available_minutes": 120, "focus": ["前端基础"]},
+            "constraints": {"focus": ["前端基础"]},
             "status": "pending",
         }
 

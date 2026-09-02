@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
-import MarkdownIt from 'markdown-it'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import type { Interview } from '../types'
+import RichText from './RichText.vue'
 
 const props = defineProps<{ interview: Interview }>()
 const emit = defineEmits<(e: 'closed') => void>()
 
-const md = new MarkdownIt()
 const content = ref('')
 const editMode = ref(false)
 const draft = ref('')
@@ -19,8 +18,6 @@ const title = computed(() => {
   const label = props.interview.review_file || '复盘'
   return `📝 ${label}`
 })
-
-const rendered = computed(() => md.render(content.value))
 
 onMounted(async () => {
   try {
@@ -104,12 +101,12 @@ function onClose(): void {
   >
     <div v-loading="loading" class="review-editor">
       <template v-if="!editMode">
-        <div class="preview md-body" v-html="rendered" />
+        <RichText class="preview" :content="content" />
       </template>
       <template v-else>
         <div class="edit-grid">
           <el-input v-model="draft" type="textarea" :rows="20" class="edit-area" />
-          <div class="preview md-body" v-html="md.render(draft)" />
+          <RichText class="preview" :content="draft" />
         </div>
       </template>
     </div>
@@ -129,7 +126,7 @@ function onClose(): void {
     </template>
 
     <el-dialog v-model="adviceOpen" title="✨ AI 点评" width="680px" append-to-body top="6vh">
-      <div v-loading="advising" class="advice-body md-body" v-html="advising ? '' : md.render(advice)" />
+      <RichText v-loading="advising" class="advice-body" :content="advising ? '' : advice" />
     </el-dialog>
   </el-dialog>
 </template>
@@ -141,9 +138,4 @@ function onClose(): void {
 .footer-bar { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 10px; }
 .hint { font-size: 12px; color: #909399; }
 .advice-body { min-height: 200px; max-height: 70vh; overflow: auto; }
-.md-body { font-size: 14px; line-height: 1.7; }
-.md-body :deep(h1) { font-size: 20px; }
-.md-body :deep(h2) { font-size: 17px; margin-top: 18px; }
-.md-body :deep(h3) { font-size: 15px; }
-.md-body :deep(ul) { padding-left: 20px; }
 </style>

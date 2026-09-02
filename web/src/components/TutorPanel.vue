@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref, watch } from 'vue'
-import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, toggleTutor } from '../store'
 import type { TutorCitation, TutorMessage, TutorSession } from '../types'
+import RichText from './RichText.vue'
 
 // AI 助教（需求 3.9.4）：学习区右侧常驻对话栏
 // 会话与消息持久化在服务端 SQLite（tutor_sessions / tutor_messages），换页面/重启都在
-
-const md = new MarkdownIt()
 
 // 助教专用模型切换（config.json 登记多个模型；只影响助教对话，其他 AI 功能用默认模型）
 interface ArkModel {
@@ -233,7 +231,7 @@ onMounted(async () => {
       <div v-for="(m, i) in messages" :key="i" class="tutor-msg" :class="m.role">
         <div v-if="m.role === 'user'" class="tutor-bubble">{{ m.content }}</div>
         <div v-else class="tutor-bubble">
-          <div class="md-body" v-html="md.render(m.content)" />
+          <RichText :content="m.content" compact />
           <div v-if="m.citations?.length" class="tutor-citations">
             <div class="citation-title">参考了本地知识库</div>
             <template v-for="citation in m.citations" :key="citation.item_id">
@@ -357,12 +355,6 @@ onMounted(async () => {
 .citation-link { color: #409eff; font-size: 11px; line-height: 1.45; text-decoration: none; }
 .citation-link:hover { text-decoration: underline; }
 .tutor-feedback { border-top: 1px solid #e7ebf0; margin-top: 7px; padding-top: 5px; color: #909399; font-size: 11px; display: flex; align-items: center; gap: 2px; }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 15px; margin: 8px 0 4px; }
-.md-body :deep(ul) { padding-left: 18px; }
-.md-body :deep(pre) { background: #fff; border: 1px solid #ebeef5; padding: 8px; border-radius: 4px; overflow: auto; }
-.md-body :deep(code) { font-size: 12px; }
-.md-body :deep(p) { margin: 6px 0; }
-
 .tutor-input-bar { border-top: 1px solid #f0f2f5; padding: 10px 14px 12px; }
 .tutor-input-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 </style>

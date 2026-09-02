@@ -22,7 +22,7 @@
 | 智能录入 | 新增投递 →「招聘信息智能录入」；可粘贴文字、拖入或 Ctrl+V 粘贴最多 9 张截图，核对识别字段及原文依据后保存 |
 | 改状态 | 看板拖拽卡片；或点开详情用状态下拉 |
 | 添加面试 | 详情 → 面试 → 添加（自动生成复盘 md 文件） |
-| AI 面试准备 | 面试卡片 →「✨ AI 准备」；设置目标和可用时间，审核并可编辑计划，确认后才写入准备清单 |
+| AI 面试准备 | 面试卡片 →「✨ AI 准备」生成并审核计划；写入后清单卡会展示理由、完成标准、依据和课程进度，点击「开始准备」进入课程、练习与 AI 陪练 |
 | 写复盘 | 面试的「📝 复盘」，应用内编辑或直接改 `server/data/reviews/*.md` |
 | 简历 | 表单里上传/选择简历，PDF 支持在线预览 |
 | 备份 | 双击 `backup.bat`，数据整体复制到 `backups/` |
@@ -58,6 +58,10 @@ AI 助教的知识检索使用本机 SQLite FTS5 trigram/BM25 与 LIKE 回退做
 
 面试准备 Agent 使用本机 FastAPI + LangGraph 做受控工作流。它通过 Express 的内部只读工具读取岗位、JD、历史复盘、知识掌握度和相关面经，模型调用仍统一经过 Node AI Gateway 并写入 `ai_runs`。计划会先暂停在人工审核节点；用户批准或编辑确认后，Express 才在事务中批量写入该场面试的清单。Graph 状态保存在本机 SQLite，可在进程重启后恢复；Agent 不执行任意 SQL、文件操作、外部搜索或桌面控制。
 
+确认后的 AI 清单项使用独立任务卡展示优先级、类别、理由、完成标准、依据、课程状态和学习进度，并带有执行工作区。课程在后台依次完成蓝图设计、2～6 个教学模块、6～12 道分层练习和质量审查；每个模块包含实际讲解、示例或对比、易错点、面试表达与自测，练习覆盖基础、理解、应用和面试四个层次。页面显示真实生成阶段，关闭弹窗不影响后台生成；失败时保留旧指引，旧版简要指引也能兼容查看并按需重新生成。任务和模块只显示建议时长，不限制学习内容或完成状态。
+
+复盘、知识答案、AI 助教、准备课程和陪练回答统一使用安全的 Markdown 富文本渲染，支持标题、段落、列表、引用、表格、代码块和链接。没有 Markdown 结构的旧版长正文会仅在展示时按完整句子自动分段，数据库原文不变。
+
 **提示词**独立存放在 `server/src/prompts/` 目录（Markdown 文件），可以直接编辑调优，**修改后无需重启**：
 
 | 文件 | 用途 |
@@ -75,8 +79,13 @@ AI 助教的知识检索使用本机 SQLite FTS5 trigram/BM25 与 LIKE 回退做
 | `prep-role-profile.system.md` | 面试准备 Agent 的岗位画像提取 |
 | `prep-query-plan.system.md` | 面试准备 Agent 的知识检索计划 |
 | `prep-gap-analysis.system.md` | 面试准备 Agent 的岗位与能力差距分析 |
-| `prep-plan.system.md` | 面试准备 Agent 的限时准备计划生成 |
+| `prep-plan.system.md` | 面试准备 Agent 的内容优先准备计划生成与建议时长 |
 | `prep-critic.system.md` | 面试准备 Agent 的事实、引用和可执行性审查 |
+| `prep-task-blueprint.system.md` | 将已确认计划项拆成课程目标、模块和覆盖关系 |
+| `prep-task-module.system.md` | 分模块生成完整讲解、示例、易错点、面试表达和自测 |
+| `prep-task-practice.system.md` | 生成覆盖基础、理解、应用和面试层次的练习、答案、追问与评分标准 |
+| `prep-task-critic.system.md` | 审查课程覆盖、内容深度、练习重复和个人事实风险 |
+| `prep-task-coach.system.md` | 围绕单项任务进行讲解、模拟提问和作答点评 |
 
 ## 数据位置
 
@@ -88,7 +97,7 @@ AI 助教的知识检索使用本机 SQLite FTS5 trigram/BM25 与 LIKE 回退做
 - `application_materials/` — 智能录入的原始招聘截图和 AI 推理副本；原始文字、关联关系和识别结果保存在 SQLite 中
 - `prep_agent_checkpoints.db` — LangGraph 运行状态与人工审核断点
 
-数据库升级由 001～007 编号迁移执行，已应用版本记录在 `schema_migrations`。迁移只做向前兼容的增量升级，启动前仍建议按需使用 `backup.bat` 备份整个 `data/`。
+数据库升级由 001～009 编号迁移执行，已应用版本记录在 `schema_migrations`。迁移只做向前兼容的增量升级，启动前仍建议按需使用 `backup.bat` 备份整个 `data/`。
 
 删除程序不影响数据；重装/换电脑时拷走整个 `data` 目录即可迁移。
 

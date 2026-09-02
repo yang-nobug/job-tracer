@@ -148,7 +148,7 @@ export interface PrepAgentRun {
   interview_id: number
   status: PrepAgentStatus
   goal: string
-  constraints: { available_minutes: number; focus: string[] }
+  constraints: { focus: string[] }
   current_node: string | null
   plan: PrepPlan | null
   evidence: PrepAgentEvidence[]
@@ -164,6 +164,115 @@ export interface PrepAgentRun {
   created_at: string
   updated_at: string
   finished_at: string | null
+}
+
+export interface PrepTaskProgress {
+  steps: number[]
+  checks: number[]
+}
+
+export interface PrepExecutionTask extends PrepPlanItem {
+  id: number
+  run_id: string
+  checklist_id: number
+  application_id: number
+  interview_id: number
+  sort: number
+  checklist_content: string
+  done: 0 | 1
+  guide_ready: boolean
+  guide_version: number
+  guide_generated_at: string | null
+  message_count: number
+  progress: PrepTaskProgress
+  generation: PrepTaskGeneration
+}
+
+export type PrepTaskSectionType =
+  | 'explanation' | 'example' | 'comparison' | 'pitfall'
+  | 'interview_answer' | 'project_template' | 'code_walkthrough'
+export type PrepPracticeLevel = 'basic' | 'understanding' | 'application' | 'interview'
+export type PrepPracticeType =
+  | 'short_answer' | 'scenario' | 'system_design' | 'coding_exercise'
+  | 'project_story' | 'behavioral_rehearsal' | 'mock_question'
+
+export interface PrepTaskGuide {
+  version: 2
+  overview: string
+  objectives: string[]
+  prerequisites: string[]
+  coverage_map: Array<{
+    objective: string
+    module_ids: string[]
+    practice_levels: PrepPracticeLevel[]
+  }>
+  modules: Array<{
+    id: string
+    title: string
+    purpose: string
+    recommended_minutes: number
+    learning_outcomes: string[]
+    evidence_refs: string[]
+    sections: Array<{
+      type: PrepTaskSectionType
+      title: string
+      content: string
+      evidence_refs: string[]
+    }>
+    self_checks: Array<{ question: string; expected_points: string[] }>
+  }>
+  practice_set: Array<{
+    level: PrepPracticeLevel
+    type: PrepPracticeType
+    prompt: string
+    hints: string[]
+    answer_outline: string
+    reference_answer: string
+    follow_ups: string[]
+    rubric: Array<{ criterion: string; description: string; score: number }>
+    module_ids: string[]
+  }>
+  completion_checklist: string[]
+  quality_review: {
+    verdict: 'pass' | 'warn'
+    repaired: boolean
+    issues: Array<{
+      code: string
+      target: 'guide' | 'module' | 'practice'
+      module_id: string | null
+      message: string
+      repair_instruction: string
+    }>
+  }
+}
+
+export interface PrepTaskGeneration {
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  stage: string | null
+  progress: number
+  error: string | null
+  started_at: string | null
+  model_calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
+export interface PrepTaskMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  request_id: string | null
+  created_at: string
+}
+
+export interface PrepTaskSession {
+  task: PrepExecutionTask
+  guide: PrepTaskGuide | null
+  progress: PrepTaskProgress
+  evidence: Array<Record<string, unknown> & { ref?: string; title?: string; excerpt?: string }>
+  messages: PrepTaskMessage[]
+  generation: PrepTaskGeneration
 }
 
 export interface ApplicationDetail extends Application {

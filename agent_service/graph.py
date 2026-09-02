@@ -84,13 +84,6 @@ def plan_issues(state: PrepAgentState, plan: dict[str, Any]) -> list[dict[str, A
     items = plan.get("items") if isinstance(plan, dict) else None
     if not isinstance(items, list) or not items:
         return [{"code": "VAGUE_ACTION", "item_index": None, "message": "计划没有任务"}]
-    available = int(state.get("constraints", {}).get("available_minutes", 240))
-    total = sum(int(item.get("estimated_minutes", 0)) for item in items if isinstance(item, dict))
-    if total > available:
-        issues.append({
-            "code": "TIME_BUDGET_EXCEEDED", "item_index": None,
-            "message": f"计划总时长 {total} 分钟超过预算 {available} 分钟",
-        })
     valid_refs = {"APP", "IV"}
     context = state.get("context", {})
     valid_refs.update(str(item.get("ref")) for item in context.get("reviews", []))
@@ -290,7 +283,6 @@ def build_graph(client: JobTracerClient):
                 *[item.get("ref") for item in state["context"].get("reviews", [])],
                 *[item.get("ref") for item in state["context"].get("mastery", [])],
             ],
-            "available_minutes": state["constraints"].get("available_minutes", 240),
             "deterministic_issues": deterministic,
         })
         value = dict(response["value"])
@@ -304,7 +296,7 @@ def build_graph(client: JobTracerClient):
                 deduplicated.append(issue)
         verdict = "revise" if any(issue.get("code") in {
             "INVALID_REFERENCE", "UNSUPPORTED_CLAIM", "DUPLICATED_ITEM",
-            "VAGUE_ACTION", "MISSING_SUCCESS_CRITERIA", "TIME_BUDGET_EXCEEDED",
+            "VAGUE_ACTION", "MISSING_SUCCESS_CRITERIA",
         } for issue in deduplicated) else str(value.get("verdict", "warn"))
         return {
             "critic_result": {"verdict": verdict, "issues": deduplicated[:30]},

@@ -1,11 +1,26 @@
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
-import { db, now } from '../db.js'
-import { buildFtsQuery, searchKnowledge } from '../knowledge-retrieval.js'
+import { mkdtempSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { retrievalFixtures } from './fixtures.js'
 import { retrievalMetrics } from './retrieval-metrics.js'
 
+// 评测会清空并重建知识库样本，因此必须在模块加载数据库前切换到独立临时目录。
+const testDataDir = mkdtempSync(path.join(os.tmpdir(), 'job-tracer-retrieval-'))
+process.env.JOB_TRACER_DATA_DIR = testDataDir
+const { db, now, DATA_DIR } = await import('../db.js')
+const { buildFtsQuery, searchKnowledge } = await import('../knowledge-retrieval.js')
+
+after(() => {
+  db.close()
+  rmSync(testDataDir, { recursive: true, force: true })
+})
+
 function seed(): Map<string, number> {
+  if (path.resolve(DATA_DIR) !== path.resolve(testDataDir)) {
+    throw new Error('拒绝在正式数据目录执行知识库评测')
+  }
   db.exec(`DELETE FROM tutor_message_feedback; DELETE FROM tutor_message_citations;
     DELETE FROM knowledge_retrieval_runs; DELETE FROM tutor_sessions; DELETE FROM knowledge_sources;`)
   const ts = now()

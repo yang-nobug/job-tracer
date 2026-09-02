@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, askTutor } from '../store'
@@ -12,11 +11,11 @@ import {
   type Mastery
 } from '../types'
 import { generateAnswersChunked } from '../utils/answers'
+import RichText from '../components/RichText.vue'
 
 // 面经详情页：整页展示一个面经（题目 + 截图），替代原来的抽屉
 const route = useRoute()
 const router = useRouter()
-const md = new MarkdownIt()
 
 const detail = ref<KnowledgeSourceDetail | null>(null)
 const loading = ref(true)
@@ -249,7 +248,7 @@ async function removeItem(itemId: number): Promise<void> {
             <span class="src-toggle">{{ expanded.has(item.id) ? '▲' : '▼' }}</span>
           </div>
           <div v-if="expanded.has(item.id)" class="src-answer">
-            <div v-if="item.answer" class="md-body" v-html="md.render(item.answer)" />
+            <RichText v-if="item.answer" :content="item.answer" />
             <div v-else class="src-noanswer">还没有答案，点上方「AI 生成答案」补齐</div>
           </div>
         </div>
@@ -346,12 +345,6 @@ async function removeItem(itemId: number): Promise<void> {
 
 .src-answer { margin-top: 12px; border-top: 1px dashed #ebeef5; padding-top: 12px; }
 .src-noanswer { color: #909399; font-size: 13px; }
-.md-body { font-size: 14px; line-height: 1.8; }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 16px; margin: 12px 0 6px; }
-.md-body :deep(ul) { padding-left: 20px; }
-.md-body :deep(pre) { background: #f6f8fa; padding: 10px; border-radius: 6px; overflow: auto; }
-.md-body :deep(code) { font-size: 13px; }
-
 /* 截图画廊（默认收起） */
 .src-gallery { margin-top: 28px; }
 .src-gallery-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

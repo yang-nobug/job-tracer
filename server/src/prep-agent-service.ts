@@ -12,7 +12,6 @@ export const PREP_AGENT_STATUSES = [
 export type PrepAgentStatus = (typeof PREP_AGENT_STATUSES)[number]
 
 export interface PrepAgentConstraints {
-  available_minutes: number
   focus: string[]
 }
 
@@ -110,11 +109,21 @@ function clipped(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
+export function parsePrepAgentConstraints(value: string | null): PrepAgentConstraints {
+  const raw = json<Record<string, unknown>>(value, {})
+  const focus = Array.isArray(raw.focus)
+    ? raw.focus.map(item => clipped(item, 40)).filter(Boolean).slice(0, 8)
+    : []
+  return { focus }
+}
+
 function normalizedTask(value: string): string {
   return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
 export function prepAgentInternalToken(): string {
+  const configured = process.env.PREP_AGENT_INTERNAL_TOKEN?.trim()
+  if (configured && configured.length >= 32) return configured
   const key = 'prep_agent_internal_token'
   const current = getSetting(key)
   if (current && current.length >= 32) return current
@@ -140,16 +149,12 @@ export function validatePrepAgentCreate(body: unknown): {
   const rawConstraints = raw.constraints && typeof raw.constraints === 'object' && !Array.isArray(raw.constraints)
     ? raw.constraints as Record<string, unknown>
     : {}
-  const availableMinutes = Number(rawConstraints.available_minutes ?? 240)
-  if (!Number.isInteger(availableMinutes) || availableMinutes < 30 || availableMinutes > 2880) {
-    throw new PrepAgentError('available_minutes 必须是 30～2880 的整数')
-  }
   const focus = Array.isArray(rawConstraints.focus)
     ? rawConstraints.focus.map(item => clipped(item, 40)).filter(Boolean).slice(0, 8)
     : []
   const requestId = clipped(raw.request_id, 100)
   if (!requestId || !/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) throw new PrepAgentError('request_id 非法')
-  return { applicationId, interviewId, goal, constraints: { available_minutes: availableMinutes, focus }, requestId }
+  return { applicationId, interviewId, goal, constraints: { focus }, requestId }
 }
 
 export function createPrepAgentRun(input: ReturnType<typeof validatePrepAgentCreate>): PrepAgentRunRow {
@@ -209,7 +214,7 @@ export function serializePrepAgentRun(id: string, includeSteps = true): Record<s
     interview_id: row.interview_id,
     status: row.status,
     goal: row.goal,
-    constraints: json<PrepAgentConstraints>(row.constraints_json, { available_minutes: 240, focus: [] }),
+    constraints: parsePrepAgentConstraints(row.constraints_json),
     snapshot_hash: row.snapshot_hash,
     current_node: row.current_node,
     plan: json<PrepPlan | null>(row.plan_json, null),
@@ -435,9 +440,6 @@ export function updatePrepAgentRun(runId: string, body: unknown): void {
 
 function validatePlanAgainstRun(run: PrepAgentRunRow, rawPlan: unknown): { plan: PrepPlan; context: PrepAgentContext } {
   const plan = validatePrepPlan(rawPlan)
-  const constraints = json<PrepAgentConstraints>(run.constraints_json, { available_minutes: 240, focus: [] })
-  const total = plan.items.reduce((sum, item) => sum + item.estimated_minutes, 0)
-  if (total > constraints.available_minutes) throw new PrepAgentError(`计划总时长 ${total} 分钟超过预算 ${constraints.available_minutes} 分钟`)
   const context = buildPrepAgentContext(run.id)
   const evidence = json<PrepAgentEvidence[]>(run.evidence_json, [])
   const validRefs = new Set([
@@ -496,7 +498,7 @@ export function persistPrepAgentPlan(runId: string, rawPlan: unknown): { checkli
        success_criteria, evidence_json, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     const checklistIds: number[] = []
     plan.items.forEach((item: PrepPlanItem, index) => {
-      const content = `[${item.priority === 'high' ? '高' : item.priority === 'medium' ? '中' : '低'}] ${item.title}（约${item.estimated_minutes}分钟）`
+      const content = `[${item.priority === 'high' ? '高' : item.priority === 'medium' ? '中' : '低'}] ${item.title}（建议${item.estimated_minutes}分钟）`
       const result = insertChecklist.run(run.interview_id, content, maxSort.value + index + 1)
       const checklistId = Number(result.lastInsertRowid)
       checklistIds.push(checklistId)

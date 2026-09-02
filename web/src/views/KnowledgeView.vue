@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import MarkdownIt from 'markdown-it'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, askTutor } from '../store'
@@ -13,9 +12,9 @@ import {
   type Mastery
 } from '../types'
 import { generateAnswersChunked } from '../utils/answers'
+import RichText from '../components/RichText.vue'
 
 const router = useRouter()
-const md = new MarkdownIt()
 
 // ---- 视图状态 ----
 const viewMode = ref<'items' | 'sources'>('items')
@@ -247,7 +246,7 @@ function openSource(sourceId: number | null): void {
                 <span class="kb-toggle">{{ expanded.has(item.id) ? '▲' : '▼' }}</span>
               </div>
               <div v-if="expanded.has(item.id)" class="kb-answer">
-                <div v-if="item.answer" class="md-body" v-html="md.render(item.answer)" />
+                <RichText v-if="item.answer" :content="item.answer" />
                 <div v-else class="kb-noanswer">还没有答案，勾选后点「生成答案」补齐</div>
               </div>
               <div v-if="item.source_company" class="kb-source" @click.stop="openSource(item.source_id)">
@@ -325,12 +324,6 @@ function openSource(sourceId: number | null): void {
   display: inline-flex; align-items: center; gap: 4px;
 }
 .kb-source:hover { color: #409eff; }
-.md-body { font-size: 14px; line-height: 1.8; }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 16px; margin: 12px 0 6px; }
-.md-body :deep(ul) { padding-left: 20px; }
-.md-body :deep(pre) { background: #f6f8fa; padding: 10px; border-radius: 6px; overflow: auto; }
-.md-body :deep(code) { font-size: 13px; }
-
 /* 掌握度胶囊：红/黄/绿 */
 .mastery-pill {
   flex-shrink: 0; cursor: pointer; user-select: none;

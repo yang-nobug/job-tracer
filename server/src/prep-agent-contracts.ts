@@ -62,7 +62,6 @@ export type PrepCriticIssueCode =
   | 'DUPLICATED_ITEM'
   | 'VAGUE_ACTION'
   | 'MISSING_SUCCESS_CRITERIA'
-  | 'TIME_BUDGET_EXCEEDED'
   | 'ROLE_REQUIREMENT_NOT_COVERED'
   | 'PRIVACY_LEAK'
 
@@ -172,7 +171,7 @@ export const PREP_CRITIC_SCHEMA = {
         properties: {
           code: { type: 'string', enum: [
             'INVALID_REFERENCE', 'UNSUPPORTED_CLAIM', 'DUPLICATED_ITEM', 'VAGUE_ACTION',
-            'MISSING_SUCCESS_CRITERIA', 'TIME_BUDGET_EXCEEDED',
+            'MISSING_SUCCESS_CRITERIA',
             'ROLE_REQUIREMENT_NOT_COVERED', 'PRIVACY_LEAK'
           ] },
           item_index: { type: ['integer', 'null'] },
@@ -318,7 +317,7 @@ export function validatePrepCritic(value: unknown): PrepCriticResult {
   if (!Array.isArray(raw.issues) || raw.issues.length > 30) throw new Error('issues 必须是最多 30 项的数组')
   const codes = [
     'INVALID_REFERENCE', 'UNSUPPORTED_CLAIM', 'DUPLICATED_ITEM', 'VAGUE_ACTION',
-    'MISSING_SUCCESS_CRITERIA', 'TIME_BUDGET_EXCEEDED',
+    'MISSING_SUCCESS_CRITERIA',
     'ROLE_REQUIREMENT_NOT_COVERED', 'PRIVACY_LEAK'
   ] as const
   const issues = raw.issues.map((value, index) => {

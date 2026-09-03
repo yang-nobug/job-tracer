@@ -315,6 +315,180 @@ const migrations: Migration[] = [
         ALTER TABLE prep_task_sessions ADD COLUMN quality_json TEXT;
       `)
     }
+  },
+  {
+    version: 10,
+    name: 'mail_accounts',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mail_accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider TEXT NOT NULL,
+          email TEXT NOT NULL COLLATE NOCASE,
+          host TEXT NOT NULL,
+          port INTEGER NOT NULL,
+          secure INTEGER NOT NULL DEFAULT 1 CHECK(secure IN (0, 1)),
+          mailbox TEXT NOT NULL DEFAULT 'INBOX',
+          credential_ref TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'connected' CHECK(status IN ('connected','error')),
+          last_tested_at TEXT,
+          last_error_code TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_provider
+          ON mail_accounts(provider);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_email
+          ON mail_accounts(email);
+      `)
+    }
+  },
+  {
+    version: 11,
+    name: 'mail_envelope_scans',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mail_sync_state (
+          account_id INTEGER NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE,
+          mailbox TEXT NOT NULL,
+          uid_validity TEXT NOT NULL,
+          last_uid INTEGER NOT NULL DEFAULT 0,
+          last_scanned_at TEXT NOT NULL,
+          PRIMARY KEY(account_id, mailbox)
+        );
+
+        CREATE TABLE IF NOT EXISTS mail_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE,
+          mailbox TEXT NOT NULL,
+          uid_validity TEXT NOT NULL,
+          uid INTEGER NOT NULL,
+          subject TEXT NOT NULL,
+          sender TEXT NOT NULL,
+          sent_at TEXT,
+          is_read INTEGER NOT NULL DEFAULT 0 CHECK(is_read IN (0, 1)),
+          score INTEGER NOT NULL,
+          matched_terms_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','ignored')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(account_id, mailbox, uid_validity, uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_candidates_status_sent
+          ON mail_candidates(account_id, status, sent_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS mail_scan_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+          scanned_count INTEGER NOT NULL DEFAULT 0,
+          candidate_count INTEGER NOT NULL DEFAULT 0,
+          new_candidate_count INTEGER NOT NULL DEFAULT 0,
+          error_code TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_scan_runs_started
+          ON mail_scan_runs(account_id, started_at DESC);
+      `)
+    }
+  },
+  {
+    version: 12,
+    name: 'mail_candidate_analyses',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mail_candidate_analyses (
+          candidate_id INTEGER PRIMARY KEY REFERENCES mail_candidates(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+          extraction_json TEXT,
+          body_hash TEXT,
+          body_truncated INTEGER NOT NULL DEFAULT 0 CHECK(body_truncated IN (0, 1)),
+          model TEXT,
+          prompt_version TEXT,
+          error_code TEXT,
+          analyzed_at TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_candidate_analyses_status
+          ON mail_candidate_analyses(status, updated_at DESC);
+      `)
+    }
+  },
+  {
+    version: 13,
+    name: 'recruitment_schedule_items',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS recruitment_schedule_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          application_id INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+          source_mail_candidate_id INTEGER REFERENCES mail_candidates(id) ON DELETE SET NULL,
+          event_type TEXT NOT NULL CHECK(event_type IN ('assessment','written_test','interview','ai_interview','offer','other')),
+          title TEXT NOT NULL,
+          company TEXT NOT NULL DEFAULT '',
+          position TEXT NOT NULL DEFAULT '',
+          time_mode TEXT NOT NULL CHECK(time_mode IN ('fixed','window','deadline','duration_after_open','flexible','unknown')),
+          scheduled_at TEXT,
+          window_start_at TEXT,
+          window_end_at TEXT,
+          deadline_at TEXT,
+          duration_minutes INTEGER,
+          timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+          location TEXT NOT NULL DEFAULT '',
+          meeting_link TEXT NOT NULL DEFAULT '',
+          action_link TEXT NOT NULL DEFAULT '',
+          contact TEXT NOT NULL DEFAULT '',
+          instructions_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed','cancelled')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_recruitment_schedule_mail_candidate
+          ON recruitment_schedule_items(source_mail_candidate_id)
+          WHERE source_mail_candidate_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_recruitment_schedule_status_time
+          ON recruitment_schedule_items(status, scheduled_at, window_end_at, deadline_at);
+        CREATE INDEX IF NOT EXISTS idx_recruitment_schedule_application
+          ON recruitment_schedule_items(application_id, status);
+      `)
+    }
+  },
+  {
+    version: 14,
+    name: 'mail_automation_settings',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mail_automation_settings (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+          run_time TEXT NOT NULL DEFAULT '09:00',
+          last_run_at TEXT,
+          last_status TEXT NOT NULL DEFAULT 'idle' CHECK(last_status IN ('idle','running','succeeded','failed')),
+          last_error_code TEXT,
+          last_error_message TEXT,
+          last_scanned_count INTEGER NOT NULL DEFAULT 0,
+          last_analyzed_count INTEGER NOT NULL DEFAULT 0,
+          last_confirmed_count INTEGER NOT NULL DEFAULT 0,
+          last_review_count INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO mail_automation_settings (id, enabled, run_time, updated_at)
+        VALUES (1, 0, '09:00', datetime('now'));
+      `)
+    }
+  },
+  {
+    version: 15,
+    name: 'mail_schedule_reviews',
+    up(db) {
+      db.exec(`
+        ALTER TABLE mail_candidate_analyses ADD COLUMN schedule_review_json TEXT;
+        ALTER TABLE mail_candidate_analyses ADD COLUMN review_model TEXT;
+        ALTER TABLE mail_candidate_analyses ADD COLUMN review_prompt_version TEXT;
+        ALTER TABLE mail_candidate_analyses ADD COLUMN review_error_code TEXT;
+      `)
+    }
   }
 ]
 

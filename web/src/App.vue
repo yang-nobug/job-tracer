@@ -1,20 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from './api'
 import { store, openCreateForm, openKnowledgeIngest } from './store'
-import type { UpcomingInterview } from './types'
+import type { UpcomingItem } from './types'
 import CountdownBar from './components/CountdownBar.vue'
 import AppFormDrawer from './components/AppFormDrawer.vue'
 import DetailDrawer from './components/DetailDrawer.vue'
 import SourceIngestDialog from './components/SourceIngestDialog.vue'
 import TutorPanel from './components/TutorPanel.vue'
 import AiPrivacyDialog from './components/AiPrivacyDialog.vue'
+import MailSettingsDialog from './components/MailSettingsDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
-const upcoming = ref<UpcomingInterview[]>([])
+const upcoming = ref<UpcomingItem[]>([])
 const privacyOpen = ref(false)
+const mailSettingsOpen = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 
 // 双工作区（需求 3.10）：投递跟踪 / 学习成长
@@ -28,7 +30,7 @@ function onWorkspaceChange(ws: string | number | boolean): void {
 
 async function loadUpcoming(): Promise<void> {
   try {
-    upcoming.value = await api.get<UpcomingInterview[]>('/upcoming')
+    upcoming.value = await api.get<UpcomingItem[]>('/upcoming')
   } catch {
     /* 静默失败，倒计时条非关键路径 */
   }
@@ -41,6 +43,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
+watch(() => store.dataVersion, () => { void loadUpcoming() })
 </script>
 
 <template>
@@ -78,6 +81,7 @@ onUnmounted(() => {
           </template>
         </nav>
         <div class="header-actions">
+          <el-button text @click="mailSettingsOpen = true">邮箱与日程</el-button>
           <el-button text @click="privacyOpen = true">AI 数据说明</el-button>
           <el-button v-if="workspace === 'track'" type="primary" round @click="openCreateForm()">+ 新增投递</el-button>
           <el-button v-else type="primary" round @click="openKnowledgeIngest">+ 录入面经</el-button>
@@ -98,6 +102,7 @@ onUnmounted(() => {
     <DetailDrawer :app-id="store.detailId" @close="store.detailId = null" />
     <SourceIngestDialog />
     <AiPrivacyDialog v-model="privacyOpen" />
+    <MailSettingsDialog v-model="mailSettingsOpen" />
   </div>
 </template>
 

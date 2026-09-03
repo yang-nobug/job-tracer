@@ -16,6 +16,10 @@ import { jdParseHandler } from './jd-parser.js'
 import { applicationImportsRouter } from './routes/application-imports.js'
 import { prepAgentRouter } from './routes/prep-agent.js'
 import { prepTasksRouter } from './routes/prep-tasks.js'
+import { mailRouter, recoverInterruptedMailAnalyses } from './routes/mail.js'
+import {
+  configureMailAutomation, mailAutomationRouter, startMailAutomationScheduler, stopMailAutomationScheduler
+} from './mail-automation.js'
 import {
   configurePrepAgentRuntime, recoverPrepAgentRuntimeRun, stopPrepAgentService
 } from './prep-agent-runtime.js'
@@ -25,6 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const configuredPort = Number(process.env.PORT)
 const PORT = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65_535 ? configuredPort : 3210
 configurePrepAgentRuntime(PORT)
+configureMailAutomation(PORT)
 
 const app = express()
 const recoveredRecordings = recoverInterruptedRecordings()
@@ -44,6 +49,8 @@ app.use('/api/recordings', recordingsRouter)
 app.use('/api/tutor', tutorRouter)
 app.use('/api', prepAgentRouter)
 app.use('/api', prepTasksRouter)
+app.use('/api', mailRouter)
+app.use('/api', mailAutomationRouter)
 app.post('/api/jd-parse', jdParseHandler)
 
 // 统一错误处理（422/500 -> JSON）
@@ -65,6 +72,8 @@ if (existsSync(publicDir)) {
 // 仅允许本机浏览器访问，不向局域网开放。
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`job-tracer 已启动: http://localhost:${PORT}`)
+  recoverInterruptedMailAnalyses()
+  startMailAutomationScheduler()
   const recoverable = recoverablePrepAgentRuns()
   if (recoverable.length) {
     console.log(`[prep-agent] 正在恢复 ${recoverable.length} 个中断运行`)
@@ -77,6 +86,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
 })
 
 function shutdown(): void {
+  stopMailAutomationScheduler()
   stopPrepAgentService()
   server.close(() => process.exit(0))
   setTimeout(() => process.exit(0), 1500).unref()

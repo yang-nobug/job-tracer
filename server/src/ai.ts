@@ -20,6 +20,8 @@ export type AiTask =
   | 'recordingReview'
   | 'reviewAdvice'
   | 'interviewPrepAgent'
+  | 'mailRecruitmentExtract'
+  | 'mailScheduleReview'
 
 export type AiOutputMode = 'text' | 'json_object' | 'json_schema'
 export type AiThinking = 'enabled' | 'disabled'
@@ -59,7 +61,7 @@ export interface ArkConfig {
 
 export const AI_TASKS: AiTask[] = [
   'applicationImport', 'jdParse', 'knowledgeExtract', 'answerGenerate',
-  'tutor', 'recordingReview', 'reviewAdvice', 'interviewPrepAgent'
+  'tutor', 'recordingReview', 'reviewAdvice', 'interviewPrepAgent', 'mailRecruitmentExtract', 'mailScheduleReview'
 ]
 
 const TASK_DEFAULTS: Record<AiTask, Required<Omit<ArkTaskConfig, 'model' | 'maxImages' | 'enabled'>>> = {
@@ -70,7 +72,9 @@ const TASK_DEFAULTS: Record<AiTask, Required<Omit<ArkTaskConfig, 'model' | 'maxI
   tutor: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.3, timeoutMs: 120_000, thinking: 'disabled' },
   recordingReview: { outputMode: 'text', maxOutputTokens: 8192, temperature: 0.2, timeoutMs: 300_000, thinking: 'disabled' },
   reviewAdvice: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.3, timeoutMs: 90_000, thinking: 'disabled' },
-  interviewPrepAgent: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.2, timeoutMs: 90_000, thinking: 'disabled' }
+  interviewPrepAgent: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.2, timeoutMs: 90_000, thinking: 'disabled' },
+  mailRecruitmentExtract: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0, timeoutMs: 90_000, thinking: 'disabled' },
+  mailScheduleReview: { outputMode: 'text', maxOutputTokens: 2048, temperature: 0, timeoutMs: 60_000, thinking: 'disabled' }
 }
 
 function positiveInteger(value: unknown): number | undefined {

@@ -24,7 +24,9 @@
       "tutor": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0.3, "timeoutMs": 120000, "thinking": "disabled" },
       "recordingReview": { "enabled": true, "outputMode": "text", "maxOutputTokens": 8192, "temperature": 0.2, "timeoutMs": 300000, "thinking": "disabled" },
       "reviewAdvice": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0.3, "timeoutMs": 90000, "thinking": "disabled" },
-      "interviewPrepAgent": { "enabled": true, "outputMode": "text", "maxOutputTokens": 8192, "temperature": 0.2, "timeoutMs": 180000, "thinking": "disabled" }
+      "interviewPrepAgent": { "enabled": true, "outputMode": "text", "maxOutputTokens": 8192, "temperature": 0.2, "timeoutMs": 180000, "thinking": "disabled" },
+      "mailRecruitmentExtract": { "enabled": true, "outputMode": "text", "maxOutputTokens": 4096, "temperature": 0, "timeoutMs": 90000, "thinking": "disabled" },
+      "mailScheduleReview": { "enabled": true, "outputMode": "text", "maxOutputTokens": 2048, "temperature": 0, "timeoutMs": 60000, "thinking": "disabled" }
     }
   },
   "asr": {

@@ -89,12 +89,12 @@ statsRouter.get('/meta', (_req: Request, res: Response) => {
   res.json({ companies })
 })
 
-// 所有未来面试（倒计时数据源）
+// 所有未来面试与已确认招聘日程（顶部倒计时数据源）
 statsRouter.get('/upcoming', (_req: Request, res: Response) => {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
   const nowStr = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-  const rows = db
+  const interviews = db
     .prepare(
       `SELECT i.id, i.round, i.scheduled_at, i.location,
               a.id AS application_id, a.company, a.position
@@ -102,6 +102,57 @@ statsRouter.get('/upcoming', (_req: Request, res: Response) => {
        WHERE i.done = 0 AND i.scheduled_at >= ?
        ORDER BY i.scheduled_at ASC`
     )
-    .all(nowStr)
-  res.json(rows)
+    .all(nowStr) as Array<Record<string, unknown> & { id: number; round: string; scheduled_at: string }>
+  const interviewItems = interviews.map(row => ({
+    ...row,
+    key: `interview:${row.id}`,
+    kind: 'interview',
+    title: row.round,
+    event_type: 'interview',
+    time_mode: 'fixed',
+    due_at: row.scheduled_at,
+    due_kind: 'scheduled',
+    window_start_at: null,
+    window_end_at: null,
+    deadline_at: null,
+    duration_minutes: null
+  }))
+
+  const schedules = db.prepare(`SELECT s.id, s.application_id, s.event_type, s.title,
+      COALESCE(NULLIF(s.company, ''), a.company, '') AS company,
+      COALESCE(NULLIF(s.position, ''), a.position, '') AS position,
+      s.time_mode, s.scheduled_at, s.window_start_at, s.window_end_at, s.deadline_at,
+      s.duration_minutes, s.location
+    FROM recruitment_schedule_items s
+    LEFT JOIN applications a ON a.id = s.application_id
+    WHERE s.status = 'active'
+    ORDER BY s.id DESC`).all() as Array<Record<string, unknown> & {
+      id: number
+      time_mode: string
+      scheduled_at: string | null
+      window_start_at: string | null
+      window_end_at: string | null
+      deadline_at: string | null
+    }>
+  const scheduleItems = schedules.flatMap(row => {
+    const moments: Array<{ at: string | null; kind: string }> = row.time_mode === 'window'
+      ? [
+          { at: row.deadline_at, kind: 'deadline' },
+          { at: row.window_start_at, kind: 'window_start' },
+          { at: row.window_end_at, kind: 'window_end' }
+        ]
+      : row.time_mode === 'fixed'
+        ? [
+            { at: row.deadline_at, kind: 'deadline' },
+            { at: row.scheduled_at, kind: 'scheduled' }
+          ]
+        : [{ at: row.deadline_at, kind: 'deadline' }]
+    const next = moments
+      .filter((moment): moment is { at: string; kind: string } => Boolean(moment.at && moment.at >= nowStr))
+      .sort((a, b) => a.at.localeCompare(b.at))[0]
+    return next ? [{ ...row, key: `schedule:${row.id}`, kind: 'schedule', due_at: next.at, due_kind: next.kind }] : []
+  })
+  res.json([...interviewItems, ...scheduleItems]
+    .sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)))
+    .slice(0, 30))
 })

@@ -282,12 +282,22 @@ export interface ApplicationDetail extends Application {
   resume?: Resume | null
 }
 
-export interface UpcomingInterview {
+export interface UpcomingItem {
+  key: string
+  kind: 'interview' | 'schedule'
   id: number
-  round: string
-  scheduled_at: string
+  title: string
+  event_type: 'assessment' | 'written_test' | 'interview' | 'ai_interview' | 'offer' | 'other'
+  time_mode: 'fixed' | 'window' | 'deadline' | 'duration_after_open' | 'flexible' | 'unknown'
+  due_at: string
+  due_kind: 'scheduled' | 'window_start' | 'window_end' | 'deadline'
+  scheduled_at: string | null
+  window_start_at: string | null
+  window_end_at: string | null
+  deadline_at: string | null
+  duration_minutes: number | null
   location: string | null
-  application_id: number
+  application_id: number | null
   company: string
   position: string
 }

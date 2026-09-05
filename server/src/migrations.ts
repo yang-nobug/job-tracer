@@ -489,6 +489,330 @@ const migrations: Migration[] = [
         ALTER TABLE mail_candidate_analyses ADD COLUMN review_error_code TEXT;
       `)
     }
+  },
+  {
+    version: 16,
+    name: 'prep_agent_analysis_snapshots',
+    up(db) {
+      addColumn(db, 'prep_agent_runs', 'role_profile_json', 'TEXT')
+      addColumn(db, 'prep_agent_runs', 'gap_analysis_json', 'TEXT')
+      addColumn(db, 'prep_agent_runs', 'critic_json', 'TEXT')
+    }
+  },
+  {
+    version: 17,
+    name: 'ai_call_audit_records',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_call_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ai_run_id INTEGER REFERENCES ai_runs(id) ON DELETE SET NULL,
+          retry_of_call_id INTEGER REFERENCES ai_call_records(id) ON DELETE SET NULL,
+          task TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          attempt INTEGER NOT NULL DEFAULT 1,
+          model TEXT,
+          prompt_hash TEXT NOT NULL,
+          provider_request_id TEXT,
+          request_messages_json TEXT NOT NULL,
+          response_schema_json TEXT,
+          request_options_json TEXT NOT NULL,
+          raw_response TEXT,
+          parsed_response_json TEXT,
+          validated_response_json TEXT,
+          status TEXT NOT NULL CHECK(status IN ('succeeded','validation_failed','provider_failed')),
+          error_type TEXT,
+          error_message TEXT,
+          duration_ms INTEGER NOT NULL,
+          finish_reason TEXT,
+          prompt_tokens INTEGER,
+          completion_tokens INTEGER,
+          total_tokens INTEGER,
+          created_at TEXT NOT NULL,
+          finished_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_call_records_created
+          ON ai_call_records(id DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_call_records_task_stage
+          ON ai_call_records(task, stage, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_call_records_retry
+          ON ai_call_records(retry_of_call_id);
+      `)
+    }
+  },
+  {
+    version: 18,
+    name: 'operation_observability',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS operation_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trace_id TEXT NOT NULL,
+          operation_type TEXT NOT NULL,
+          trigger_type TEXT NOT NULL CHECK(trigger_type IN ('manual','scheduled','retry','system')),
+          status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','partial_success','failed','cancelled')),
+          parent_entity_type TEXT,
+          parent_entity_id TEXT,
+          input_summary_json TEXT,
+          result_summary_json TEXT,
+          retry_of_run_id INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL,
+          error_code TEXT,
+          error_message TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          duration_ms INTEGER,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_operation_runs_created ON operation_runs(id DESC);
+        CREATE INDEX IF NOT EXISTS idx_operation_runs_trace ON operation_runs(trace_id, id);
+        CREATE INDEX IF NOT EXISTS idx_operation_runs_status ON operation_runs(status, started_at DESC);
+        CREATE TABLE IF NOT EXISTS operation_steps (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operation_run_id INTEGER NOT NULL REFERENCES operation_runs(id) ON DELETE CASCADE,
+          parent_step_id INTEGER REFERENCES operation_steps(id) ON DELETE SET NULL,
+          step_name TEXT NOT NULL,
+          sequence INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL CHECK(status IN ('running','succeeded','skipped','failed')),
+          input_summary_json TEXT,
+          output_summary_json TEXT,
+          error_code TEXT,
+          error_message TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          duration_ms INTEGER,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_operation_steps_run ON operation_steps(operation_run_id, id);
+        CREATE TABLE IF NOT EXISTS app_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          level TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),
+          source TEXT NOT NULL,
+          event_name TEXT NOT NULL,
+          trace_id TEXT,
+          operation_run_id INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL,
+          operation_step_id INTEGER REFERENCES operation_steps(id) ON DELETE SET NULL,
+          entity_type TEXT,
+          entity_id TEXT,
+          message TEXT NOT NULL,
+          context_json TEXT,
+          error_code TEXT,
+          error_stack TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_logs_created ON app_logs(id DESC);
+        CREATE INDEX IF NOT EXISTS idx_app_logs_trace ON app_logs(trace_id, id);
+        CREATE INDEX IF NOT EXISTS idx_app_logs_run ON app_logs(operation_run_id, id);
+        CREATE INDEX IF NOT EXISTS idx_app_logs_error ON app_logs(level, error_code, id DESC);
+      `)
+      addColumn(db, 'ai_call_records', 'trace_id', 'TEXT')
+      addColumn(db, 'ai_call_records', 'operation_run_id', 'INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL')
+      addColumn(db, 'ai_call_records', 'operation_step_id', 'INTEGER REFERENCES operation_steps(id) ON DELETE SET NULL')
+      addColumn(db, 'ai_call_records', 'parent_entity_type', 'TEXT')
+      addColumn(db, 'ai_call_records', 'parent_entity_id', 'TEXT')
+      addColumn(db, 'ai_call_records', 'provider_attempts', 'INTEGER')
+      addColumn(db, 'prep_agent_runs', 'trace_id', 'TEXT')
+      addColumn(db, 'prep_agent_runs', 'operation_run_id', 'INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL')
+      addColumn(db, 'prep_agent_steps', 'operation_step_id', 'INTEGER REFERENCES operation_steps(id) ON DELETE SET NULL')
+      addColumn(db, 'mail_scan_runs', 'operation_run_id', 'INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL')
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_ai_call_records_trace ON ai_call_records(trace_id, id);
+        CREATE INDEX IF NOT EXISTS idx_ai_call_records_operation ON ai_call_records(operation_run_id, id);
+      `)
+    }
+  },
+  {
+    version: 19,
+    name: 'prep_task_operation_observability',
+    up(db) {
+      addColumn(db, 'prep_task_sessions', 'trace_id', 'TEXT')
+      addColumn(db, 'prep_task_sessions', 'operation_run_id', 'INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL')
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prep_task_sessions_operation ON prep_task_sessions(operation_run_id)`)
+    }
+  },
+  {
+    version: 20,
+    name: 'project_code_archives',
+    up(db) {
+      // 被分析的代码仓库始终是外部只读来源；这里仅保存 job-tracer 自己的索引和用户确认的信息。
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS project_profiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          source_path TEXT NOT NULL,
+          root_realpath TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ready' CHECK(status IN ('ready','scanning','failed','archived')),
+          last_scan_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_project_profiles_root ON project_profiles(root_realpath);
+        CREATE TABLE IF NOT EXISTS project_repo_scans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES project_profiles(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK(status IN ('running','succeeded','partial_success','failed')),
+          root_realpath TEXT NOT NULL,
+          file_limit INTEGER NOT NULL,
+          byte_limit INTEGER NOT NULL,
+          files_seen INTEGER NOT NULL DEFAULT 0,
+          files_indexed INTEGER NOT NULL DEFAULT 0,
+          files_skipped INTEGER NOT NULL DEFAULT 0,
+          bytes_read INTEGER NOT NULL DEFAULT 0,
+          truncated INTEGER NOT NULL DEFAULT 0,
+          skipped_json TEXT NOT NULL DEFAULT '[]',
+          error_message TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_scans_project ON project_repo_scans(project_id, id DESC);
+        CREATE TABLE IF NOT EXISTS project_code_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES project_profiles(id) ON DELETE CASCADE,
+          relative_path TEXT NOT NULL,
+          language TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          line_count INTEGER NOT NULL,
+          is_generated INTEGER NOT NULL DEFAULT 0,
+          last_seen_scan_id INTEGER NOT NULL REFERENCES project_repo_scans(id) ON DELETE CASCADE,
+          indexed_at TEXT NOT NULL,
+          UNIQUE(project_id, relative_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_code_files_project ON project_code_files(project_id, relative_path);
+        CREATE TABLE IF NOT EXISTS project_code_symbols (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES project_profiles(id) ON DELETE CASCADE,
+          file_id INTEGER NOT NULL REFERENCES project_code_files(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          exported INTEGER NOT NULL DEFAULT 0,
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          signature TEXT NOT NULL DEFAULT '',
+          last_seen_scan_id INTEGER NOT NULL REFERENCES project_repo_scans(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_symbols_project ON project_code_symbols(project_id, name);
+        CREATE TABLE IF NOT EXISTS project_code_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES project_profiles(id) ON DELETE CASCADE,
+          file_id INTEGER NOT NULL REFERENCES project_code_files(id) ON DELETE CASCADE,
+          symbol_id INTEGER REFERENCES project_code_symbols(id) ON DELETE SET NULL,
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_seen_scan_id INTEGER NOT NULL REFERENCES project_repo_scans(id) ON DELETE CASCADE,
+          UNIQUE(project_id, file_id, start_line, end_line)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_chunks_project ON project_code_chunks(project_id, file_id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS project_code_chunks_fts USING fts5(content, relative_path UNINDEXED, project_id UNINDEXED, chunk_id UNINDEXED);
+        CREATE TABLE IF NOT EXISTS project_facts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES project_profiles(id) ON DELETE CASCADE,
+          fact_type TEXT NOT NULL CHECK(fact_type IN ('architecture','responsibility','technology','decision','metric','risk')),
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          evidence_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+          confidence TEXT NOT NULL DEFAULT 'user_confirmed' CHECK(confidence IN ('inferred','user_confirmed')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_facts_project ON project_facts(project_id, fact_type, id DESC);
+      `)
+    }
+  },
+  {
+    version: 21,
+    name: 'project_code_incremental_scopes',
+    up(db) {
+      // 增量判断只使用源码文件元数据；不会运行 Git 命令，也不会改动源码仓库的索引或工作区。
+      addColumn(db, 'project_profiles', 'scan_scopes_json', "TEXT NOT NULL DEFAULT '[]'")
+      addColumn(db, 'project_code_files', 'mtime_ms', 'REAL')
+      addColumn(db, 'project_repo_scans', 'files_reused', 'INTEGER NOT NULL DEFAULT 0')
+    }
+  },
+  {
+    version: 22,
+    name: 'code_reading_agent_sessions',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS code_reading_sessions (
+          id TEXT PRIMARY KEY,
+          project_id INTEGER NOT NULL REFERENCES project_profiles(id) ON DELETE CASCADE,
+          question TEXT NOT NULL,
+          output_mode TEXT NOT NULL CHECK(output_mode IN ('explain','architecture','interview_story')),
+          status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')),
+          model TEXT,
+          tool_calls_used INTEGER NOT NULL DEFAULT 0,
+          bytes_read INTEGER NOT NULL DEFAULT 0,
+          max_tool_calls INTEGER NOT NULL,
+          max_bytes_read INTEGER NOT NULL,
+          final_json TEXT,
+          error_code TEXT,
+          error_message TEXT,
+          trace_id TEXT,
+          operation_run_id INTEGER REFERENCES operation_runs(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_reading_sessions_project ON code_reading_sessions(project_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS code_reading_steps (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES code_reading_sessions(id) ON DELETE CASCADE,
+          sequence INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('model','tool','final')),
+          tool_name TEXT,
+          input_json TEXT,
+          output_json TEXT,
+          status TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+          error_message TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_reading_steps_session ON code_reading_steps(session_id, sequence);
+        CREATE TABLE IF NOT EXISTS code_reading_evidence (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES code_reading_sessions(id) ON DELETE CASCADE,
+          evidence_ref TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          excerpt TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(session_id, evidence_ref)
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_reading_evidence_session ON code_reading_evidence(session_id, id);
+        CREATE TABLE IF NOT EXISTS code_reading_claims (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES code_reading_sessions(id) ON DELETE CASCADE,
+          claim_kind TEXT NOT NULL CHECK(claim_kind IN ('code_fact','inference','user_confirmation_required')),
+          statement TEXT NOT NULL,
+          confidence TEXT NOT NULL CHECK(confidence IN ('high','medium','low')),
+          evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+          caveat TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_reading_claims_session ON code_reading_claims(session_id, id);
+      `)
+    }
+  },
+  {
+    version: 23,
+    name: 'resume_text_for_prep_agent',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS resume_texts (
+          resume_id INTEGER PRIMARY KEY REFERENCES resumes(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK(status IN ('pending','extracting','completed','failed','unsupported')),
+          text_content TEXT,
+          content_hash TEXT,
+          error_message TEXT,
+          extracted_at TEXT,
+          updated_at TEXT NOT NULL
+        );
+      `)
+    }
   }
 ]
 

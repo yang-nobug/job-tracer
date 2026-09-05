@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto'
 import { AiError, completeStructured, isAiTaskEnabled, loadArkConfig, resolveAiTask, type ChatContent, type ChatMessage } from './ai.js'
 import { loadPrompt } from './prompt-loader.js'
-import { EXTRACTION_SCHEMA, IMPORT_FIELDS, IMPORT_LIMITS, validateExtraction, type ExtractionResult, type ImportSource, type Evidence, type ImportAnalysis } from '../../shared/application-import.js'
+import {
+  EXTRACTION_SCHEMA, IMPORT_FIELDS, IMPORT_LIMITS, normalizeExtraction, validateExtraction,
+  type ExtractionResult, type ImportSource, type Evidence, type ImportAnalysis
+} from '../../shared/application-import.js'
 import { ImportError, getImport, imageDataUrl, findDuplicates } from './application-materials.js'
 import { resolveAppliedDate } from './application-dates.js'
 
@@ -17,27 +20,31 @@ export function extractionConfig() {
   return { available: !!resolved, model: resolved?.model ?? null, imageModel: imageModel?.id ?? null, maxImages: Math.max(1, Math.min(IMPORT_LIMITS.images, max)) }
 }
 
-const normalized = (text: string) => text.normalize('NFKC').replace(/\s/g, '').toLowerCase()
-export function verifyEvidence(result: ExtractionResult, sources: ImportSource[]): ExtractionResult {
-  const supported = (evidence: Evidence[]) => evidence.length > 0 && evidence.every(e => {
-    const source = sources.find(source => source.id === e.source_id)
-    if (!source) throw new Error('模型引用了不存在的材料编号')
-    return source.kind === 'image' || normalized(source.text ?? '').includes(normalized(e.quote))
-  })
+function knownEvidence(evidence: Evidence[], sources: ImportSource[]): Evidence[] {
+  return evidence.filter(item => sources.some(source => source.id === item.source_id))
+}
+
+/**
+ * 视觉模型的引用文字不能在本地重新 OCR 验证。这里仅移除不存在的材料编号，
+ * 不会因引用缺失或措辞差异清空模型已经输出的字段值；证据用于用户核对。
+ */
+export function normalizeEvidenceReferences(result: ExtractionResult, sources: ImportSource[]): ExtractionResult {
   for (const candidate of result.target_candidates) {
-    if (candidate.source_ids.some(id => !sources.some(source => source.id === id))) throw new Error('目标岗位引用了不存在的材料')
+    const validSourceIds = candidate.source_ids.filter(id => sources.some(source => source.id === id))
+    if (validSourceIds.length !== candidate.source_ids.length) {
+      candidate.source_ids = validSourceIds
+      result.warnings.push('一个目标岗位引用了不存在的材料编号，已忽略该编号')
+    }
   }
   for (const key of IMPORT_FIELDS) {
     const field = result.fields[key]
-    const literal = (value: string, evidence: Evidence[]) => ['summary', 'jd_text', 'status'].includes(key) || evidence.some(e => normalized(e.quote).includes(normalized(value)))
-    if (field.value && (!supported(field.evidence) || !literal(field.value, field.evidence))) {
-      field.value = null; field.state = 'uncertain'; result.warnings.push(`${key} 缺少可验证的原文依据，未自动填写`)
-    }
-    field.alternatives = field.alternatives.filter(option => supported(option.evidence) && literal(option.value, option.evidence))
+    field.evidence = knownEvidence(field.evidence, sources)
+    field.alternatives = field.alternatives.map(option => ({ ...option, evidence: knownEvidence(option.evidence, sources) }))
     if (field.state === 'conflict' && field.alternatives.length < 2) field.state = 'uncertain'
   }
   result.date_facts = result.date_facts.filter(fact => {
-    if (!supported(fact.evidence)) { result.warnings.push('一条日期引用不在原文中，已排除'); return false }
+    fact.evidence = knownEvidence(fact.evidence, sources)
+    if (!fact.evidence.length) { result.warnings.push('一条日期引用了不存在的材料，已排除'); return false }
     if (fact.kind === 'application' && !fact.evidence.some(e => /投递|申请|提交简历|简历提交/.test(e.quote))) {
       fact.kind = 'unknown'; result.warnings.push('日期引用未说明是投递时间，需核对')
     }
@@ -46,11 +53,6 @@ export function verifyEvidence(result: ExtractionResult, sources: ImportSource[]
     }
     return true
   })
-  const link = result.fields.jd_link
-  if (link.value) {
-    try { if (!['http:', 'https:'].includes(new URL(link.value).protocol)) throw new Error() }
-    catch { link.value = null; link.state = 'uncertain'; result.warnings.push('链接格式不安全或不完整，未自动填写') }
-  }
   if (result.target_state !== 'single') {
     for (const field of Object.values(result.fields)) { field.value = null; field.state = 'uncertain'; field.alternatives = [] }
     result.date_facts = []
@@ -86,8 +88,8 @@ export async function analyzeImport(id: string, cancel: AbortSignal): Promise<Im
       signal: cancel,
       schemaName: 'application_extraction',
       schema: EXTRACTION_SCHEMA,
-      validate: value => verifyEvidence(validateExtraction(value), draft.sources),
-      repairInstruction: error => `上次输出未通过校验：${error.message}。请重新查看同一组材料，仅修正格式和证据，不补造事实，返回完整 JSON。`
+      validate: value => normalizeEvidenceReferences(validateExtraction(normalizeExtraction(value)), draft.sources),
+      repairInstruction: error => `上次输出未通过结构校验：${error.message.slice(0, 300)}。已重新附上全部截图、文字材料和你的上一轮输出。请在不丢失已识别字段值的前提下，只修正 JSON 格式、缺失字段或非法枚举；返回完整 JSON。`
     })
     const extraction: ExtractionResult = structured.value
     const applied_date = resolveAppliedDate(extraction.date_facts, draft.sources)
@@ -106,7 +108,7 @@ export async function analyzeImport(id: string, cancel: AbortSignal): Promise<Im
     if (error instanceof ImportError) throw error
     if (error instanceof AiError) {
       const message = error.kind === 'validation'
-        ? '模型结果格式或证据仍不符合要求，请重新识别或手动录入'
+        ? `模型输出仍不完整：${error.message.replace(/^模型结果格式仍不符合要求：?\s*/, '').slice(0, 160)}。请重新识别或手动录入`
         : error.message
       throw new ImportError(message, error.statusCode)
     }

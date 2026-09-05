@@ -11,12 +11,16 @@ import SourceIngestDialog from './components/SourceIngestDialog.vue'
 import TutorPanel from './components/TutorPanel.vue'
 import AiPrivacyDialog from './components/AiPrivacyDialog.vue'
 import MailSettingsDialog from './components/MailSettingsDialog.vue'
+import ObservabilityDialog from './components/ObservabilityDialog.vue'
+import ProjectArchiveDialog from './components/ProjectArchiveDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const upcoming = ref<UpcomingItem[]>([])
 const privacyOpen = ref(false)
 const mailSettingsOpen = ref(false)
+const observabilityOpen = ref(false)
+const projectArchiveOpen = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 
 // 双工作区（需求 3.10）：投递跟踪 / 学习成长
@@ -81,7 +85,9 @@ watch(() => store.dataVersion, () => { void loadUpcoming() })
           </template>
         </nav>
         <div class="header-actions">
+          <el-button v-if="workspace === 'learn'" text @click="projectArchiveOpen = true">项目档案</el-button>
           <el-button text @click="mailSettingsOpen = true">邮箱与日程</el-button>
+          <el-button text @click="observabilityOpen = true">运行与日志</el-button>
           <el-button text @click="privacyOpen = true">AI 数据说明</el-button>
           <el-button v-if="workspace === 'track'" type="primary" round @click="openCreateForm()">+ 新增投递</el-button>
           <el-button v-else type="primary" round @click="openKnowledgeIngest">+ 录入面经</el-button>
@@ -103,6 +109,8 @@ watch(() => store.dataVersion, () => { void loadUpcoming() })
     <SourceIngestDialog />
     <AiPrivacyDialog v-model="privacyOpen" />
     <MailSettingsDialog v-model="mailSettingsOpen" />
+    <ObservabilityDialog v-model="observabilityOpen" />
+    <ProjectArchiveDialog v-model="projectArchiveOpen" />
   </div>
 </template>
 

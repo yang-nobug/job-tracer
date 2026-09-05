@@ -24,6 +24,7 @@ const AI_TASK_INFO: Record<AiTask, { label: string; data: string; visible: boole
   recordingReview: { label: '录音复盘', data: '语音转写文本或分段提取结果', visible: true },
   reviewAdvice: { label: '复盘建议', data: '复盘内容、岗位信息和 JD 摘要', visible: true },
   interviewPrepAgent: { label: '面试准备 Agent', data: '岗位信息、面试信息、必要的历史复盘和检索知识', visible: true },
+  codeReading: { label: '代码理解 Agent', data: '用户问题与按需读取的受限代码片段', visible: true },
   mailRecruitmentExtract: { label: '招聘邮件识别', data: '候选邮件的主题、发件人、发送时间、正文文字和正文链接（不含附件）', visible: true },
   mailScheduleReview: { label: '招聘日程合理性复核', data: '邮件标题、发件人、发送时间、正文和待复核的结构化事件（不含附件）', visible: true }
 }
@@ -65,6 +66,26 @@ aiRouter.get('/ai/runs', (req: Request, res: Response) => {
     finish_reason, prompt_tokens, completion_tokens, total_tokens, status, error_type, created_at
     FROM ai_runs ORDER BY id DESC LIMIT ?`).all(limit)
   res.json(rows)
+})
+
+aiRouter.get('/ai/calls', (req: Request, res: Response) => {
+  const requested = Number(req.query.limit)
+  const limit = Number.isFinite(requested) ? Math.min(200, Math.max(1, Math.floor(requested))) : 50
+  const rows = db.prepare(`SELECT id,retry_of_call_id,task,stage,attempt,model,provider_request_id,provider_attempts,
+    status,error_type,error_message,duration_ms,finish_reason,prompt_tokens,completion_tokens,total_tokens,created_at
+    FROM ai_call_records ORDER BY id DESC LIMIT ?`).all(limit)
+  res.json(rows)
+})
+
+aiRouter.get('/ai/calls/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) { res.status(422).json({ message: '调用记录 ID 非法' }); return }
+  const row = db.prepare(`SELECT id,ai_run_id,retry_of_call_id,task,stage,attempt,model,prompt_hash,provider_request_id,provider_attempts,
+    request_messages_json,response_schema_json,request_options_json,raw_response,parsed_response_json,
+    validated_response_json,status,error_type,error_message,duration_ms,finish_reason,prompt_tokens,
+    completion_tokens,total_tokens,created_at,finished_at FROM ai_call_records WHERE id=?`).get(id)
+  if (!row) { res.status(404).json({ message: 'AI 调用记录不存在' }); return }
+  res.json(row)
 })
 
 // AI JD 解析：提取公司/职位/地点 + 岗位要求摘要

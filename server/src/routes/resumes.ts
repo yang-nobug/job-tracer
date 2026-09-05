@@ -4,6 +4,7 @@ import path from 'node:path'
 import { existsSync, unlinkSync } from 'node:fs'
 import type { Request, Response } from 'express'
 import { db, UPLOADS_DIR, now } from '../db.js'
+import { extractResumeText, listResumesWithText, resumeWithText } from '../resume-text.js'
 
 export const resumesRouter = Router()
 
@@ -34,7 +35,7 @@ const upload = multer({
 })
 
 resumesRouter.get('/', (_req: Request, res: Response) => {
-  res.json(db.prepare('SELECT * FROM resumes ORDER BY uploaded_at DESC').all())
+  res.json(listResumesWithText())
 })
 
 resumesRouter.post('/', upload.single('file'), (req: Request, res: Response) => {
@@ -51,7 +52,15 @@ resumesRouter.post('/', upload.single('file'), (req: Request, res: Response) => 
       req.body?.note?.trim() || null,
       now()
     )
-  res.status(201).json(db.prepare('SELECT * FROM resumes WHERE id = ?').get(result.lastInsertRowid))
+  // 上传后只在本机通过隔离 Python 进程提取文本；失败不影响文件保存，用户可稍后重试。
+  res.status(201).json(extractResumeText(Number(result.lastInsertRowid)))
+})
+
+resumesRouter.post('/:id/extract', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) { res.status(422).json({ message: '简历编号无效' }); return }
+  try { res.json(extractResumeText(id)) }
+  catch (error) { res.status(500).json({ message: (error as Error).message || '简历提取失败' }) }
 })
 
 // 文件流（浏览器在线预览 PDF / 下载 Word）

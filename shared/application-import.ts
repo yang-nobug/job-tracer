@@ -62,6 +62,115 @@ export const EXTRACTION_SCHEMA = object({
   warnings: array(textSchema)
 })
 
+const FIELD_STATES = ['extracted', 'missing', 'uncertain', 'conflict'] as const
+const TARGET_STATES = ['single', 'multiple', 'unclear'] as const
+const DATE_KINDS = ['application', 'planned_application', 'publish', 'update', 'interview', 'unknown'] as const
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function text(value: unknown, max = 24_000): string | null {
+  return typeof value === 'string' && value.trim() && value.trim().length <= max ? value.trim() : null
+}
+
+function evidenceList(value: unknown): Evidence[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap(item => {
+    const raw = record(item)
+    const source_id = text(raw?.source_id, 200)
+    const quote = text(raw?.quote, 500)
+    return source_id && quote ? [{ source_id, quote }] : []
+  }).slice(0, 80)
+}
+
+/**
+ * 视觉模型常能识别岗位内容，却偶尔遗漏空数组或某个未提供字段。
+ * 这里仅补齐结构并清理格式错误。只要模型给出合法字段值，就保留给用户核对；
+ * 不因缺少证据或字段状态而清空模型已经识别出的公司、职位等信息。
+ */
+export function normalizeExtraction(value: unknown): ExtractionResult {
+  const raw = record(value)
+  if (!raw) throw new Error('根对象不是 JSON 对象')
+  const diagnostics: string[] = []
+  const rawFields = record(raw.fields)
+  if (!rawFields) throw new Error('fields 不是对象')
+
+  const fields = Object.fromEntries(IMPORT_FIELDS.map(key => {
+    const item = record(rawFields[key])
+    if (!item) {
+      diagnostics.push(`${key} 未返回，已留空待补充`)
+      return [key, { value: null, state: 'missing', evidence: [], alternatives: [] }]
+    }
+    const value = text(item.value, key === 'jd_text' ? 24_000 : 2_000)
+    const evidence = evidenceList(item.evidence)
+    const alternatives = Array.isArray(item.alternatives) ? item.alternatives.flatMap(option => {
+      const candidate = record(option)
+      const candidateValue = text(candidate?.value, key === 'jd_text' ? 24_000 : 2_000)
+      const candidateEvidence = evidenceList(candidate?.evidence)
+      return candidateValue ? [{ value: candidateValue, evidence: candidateEvidence }] : []
+    }).slice(0, 80) : []
+    const requestedState = FIELD_STATES.includes(item.state as typeof FIELD_STATES[number])
+      ? item.state as ExtractedField['state']
+      : null
+    const validStatus = key !== 'status' || value === null || IMPORT_STATUSES.includes(value as typeof IMPORT_STATUSES[number])
+
+    if (requestedState === 'conflict' && alternatives.length >= 2) {
+      return [key, { value: null, state: 'conflict', evidence: [], alternatives }]
+    }
+    if (value && validStatus) {
+      return [key, { value, state: 'extracted', evidence, alternatives: [] }]
+    }
+    if (value) diagnostics.push(`${key} 状态值不合法，已留空待补充`)
+    else if (requestedState === 'conflict') diagnostics.push(`${key} 的冲突候选不足，已改为待核对`)
+    return [key, { value: null, state: requestedState === 'uncertain' || value ? 'uncertain' : 'missing', evidence: [], alternatives: [] }]
+  })) as Record<ImportField, ExtractedField>
+
+  const targetCandidates = Array.isArray(raw.target_candidates) ? raw.target_candidates.flatMap(item => {
+    const candidate = record(item)
+    if (!candidate) return []
+    const company = text(candidate.company, 2_000)
+    const position = text(candidate.position, 2_000)
+    const source_ids = Array.isArray(candidate.source_ids)
+      ? candidate.source_ids.flatMap(id => text(id, 200) ? [text(id, 200)!] : []).slice(0, 80)
+      : []
+    return [{ company, position, source_ids }]
+  }).slice(0, 80) : []
+  const hasCoreFields = Boolean(fields.company.value && fields.position.value)
+  const target_state = TARGET_STATES.includes(raw.target_state as typeof TARGET_STATES[number])
+    ? raw.target_state as ExtractionResult['target_state']
+    : hasCoreFields ? 'single' : 'unclear'
+  if (raw.target_state !== target_state) {
+    diagnostics.push(hasCoreFields
+      ? '目标岗位状态未返回，已根据公司和职位按单个岗位处理'
+      : '目标岗位状态未按格式返回，已改为待确认')
+  }
+
+  const date_facts = Array.isArray(raw.date_facts) ? raw.date_facts.flatMap(item => {
+    const fact = record(item)
+    const kind = DATE_KINDS.includes(fact?.kind as typeof DATE_KINDS[number]) ? fact?.kind as DateFact['kind'] : null
+    const rawDate = text(fact?.raw, 160)
+    const evidence = evidenceList(fact?.evidence)
+    if (!kind || !rawDate || !evidence.length) {
+      if (fact) diagnostics.push('一条日期信息缺少完整格式或证据，已忽略')
+      return []
+    }
+    return [{ kind, raw: rawDate, evidence }]
+  }).slice(0, 80) : []
+  const warnings = Array.isArray(raw.warnings)
+    ? raw.warnings.flatMap(item => text(item, 2_000) ? [text(item, 2_000)!] : []).slice(0, 80)
+    : []
+
+  return {
+    schema_version: '1',
+    target_state,
+    target_candidates: targetCandidates,
+    fields,
+    date_facts,
+    warnings: [...new Set([...warnings, ...diagnostics])].slice(0, 80)
+  }
+}
+
 // Validate the small, fixed schema above at runtime, including additional keys.
 // This is deliberately not a general JSON Schema engine.
 function checkSchema(value: unknown, schema: JsonSchema, at = '$'): void {
@@ -86,10 +195,10 @@ export function validateExtraction(value: unknown): ExtractionResult {
   const result = value as ExtractionResult
   for (const key of IMPORT_FIELDS) {
     const field = result.fields[key]
-    if (field.state === 'extracted' && (!field.value?.trim() || !field.evidence.length)) throw new Error(`${key} 缺少字段值或证据`)
+    if (field.state === 'extracted' && !field.value?.trim()) throw new Error(`${key} 缺少字段值`)
     if (field.state !== 'extracted' && field.value !== null) throw new Error(`${key} 未确认的字段必须为 null`)
     if (field.state === 'conflict' && field.alternatives.length < 2) throw new Error(`${key} 缺少冲突候选`)
-    if (field.alternatives.some(option => !option.value.trim() || !option.evidence.length)) throw new Error(`${key} 候选缺少证据`)
+    if (field.alternatives.some(option => !option.value.trim())) throw new Error(`${key} 候选缺少字段值`)
     if (key !== 'jd_text' && (field.value?.length ?? 0) > 2000) throw new Error(`${key} 过长`)
   }
   if (result.date_facts.some(fact => !fact.raw.trim() || fact.raw.length > 160 || !fact.evidence.length)) throw new Error('日期缺少原文或证据')

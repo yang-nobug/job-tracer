@@ -1,13 +1,17 @@
 const MAX_INFERENCE_EDGE = 2048
+const MAX_ORIGINAL_INFERENCE_BYTES = 5 * 1024 * 1024
 const JPEG_QUALITY = 0.86
 
 /**
- * 生成只供视觉模型使用的副本。原始文件仍单独上传并用于本地预览，
- * 这里统一限制最长边并去掉 EXIF 等非像素元数据。
+ * 小图直接作为视觉输入，避免不必要的文字细节损失。只有尺寸或体积较大时，
+ * 才生成受限的 JPEG 副本；原始文件始终单独保留用于本地核对。
  */
 export async function createInferenceImage(file: File): Promise<File> {
   const bitmap = await createImageBitmap(file)
   try {
+    if (Math.max(bitmap.width, bitmap.height) <= MAX_INFERENCE_EDGE && file.size <= MAX_ORIGINAL_INFERENCE_BYTES) {
+      return file
+    }
     const scale = Math.min(1, MAX_INFERENCE_EDGE / Math.max(bitmap.width, bitmap.height))
     const width = Math.max(1, Math.round(bitmap.width * scale))
     const height = Math.max(1, Math.round(bitmap.height * scale))

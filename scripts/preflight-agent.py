@@ -13,6 +13,7 @@ REQUIRED = {
     "langgraph": "1.1.2",
     "langgraph-checkpoint-sqlite": "3.1.1",
     "pydantic": "2.10.4",
+    "pypdf": "5.1.0",
     "uvicorn": "0.34.0",
 }
 

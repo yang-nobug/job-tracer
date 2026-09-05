@@ -72,11 +72,15 @@ AI 识别本身不会写入业务数据。用户确认后的事项保存在通�
 
 不配置也能正常使用（AI 按钮会提示未配置，本地正则解析不受影响）。API Key 只存在本地 config.json（已 gitignore），仅后端调用，不会发到浏览器。
 
-AI 参数按 `ark.tasks` 中的任务配置：`applicationImport`、`jdParse`、`knowledgeExtract`、`answerGenerate`、`tutor`、`recordingReview`、`reviewAdvice`、`interviewPrepAgent`、`mailRecruitmentExtract` 和 `mailScheduleReview`。每项任务可单独设置 `enabled`、`model`、`outputMode`、`maxOutputTokens`、`temperature`、`timeoutMs` 和 `thinking`。旧的 `ark.recruitment` 仍兼容，等价于 `tasks.applicationImport`。页面右上角「AI 数据说明」可随时查看数据去向并在本机停用或重新启用各项能力。
+AI 参数按 `ark.tasks` 中的任务配置：`applicationImport`、`jdParse`、`knowledgeExtract`、`answerGenerate`、`tutor`、`recordingReview`、`reviewAdvice`、`interviewPrepAgent`、`codeReading`、`mailRecruitmentExtract` 和 `mailScheduleReview`。每项任务可单独设置 `enabled`、`model`、`outputMode`、`maxOutputTokens`、`temperature`、`timeoutMs` 和 `thinking`。旧的 `ark.recruitment` 仍兼容，等价于 `tasks.applicationImport`。页面右上角「AI 数据说明」可随时查看数据去向并在本机停用或重新启用各项能力。
+
+代码理解 Agent 只读取用户接入的本机项目目录，并在每次调查中按需使用目录、文件搜索和有限行数的代码读取工具。它跳过依赖、构建产物、密钥和环境文件，不修改源码仓库；模型只会收到本次调查需要的片段。最终结论会区分代码事实、工程推断和需要用户确认的个人经历，并保存路径、行号证据。
 
 图片任务所选模型必须在 `ark.models` 中明确标记 `"vision": true`；没有明确声明时不会发送图片。`outputMode` 可取 `text`、`json_object` 或 `json_schema`，只有确认模型支持结构化输出时才使用 `json_schema` 并在模型上声明 `"structuredOutput": true`，不确定时使用 `text`。即使使用文本模式，服务端仍会执行 JSON Schema 对应的运行时校验，并在格式失败时最多修复一次。
 
-截图和文字仅在点击相应 AI 操作后发送给已配置的服务。招聘材料和知识截图的原图保存在本机；浏览器另生成最长边不超过 2048 像素、去掉 EXIF 的 JPEG 推理副本，AI 只读取该副本。每次 AI 请求只记录任务、模型、耗时、token、状态和提示内容哈希，不保存提示词或模型原始回答，最近记录可在「AI 数据说明」查看。
+截图和文字仅在点击相应 AI 操作后发送给已配置的服务。招聘材料和知识截图的原图保存在本机；最长边不超过 2048 像素且不超过 5 MB 的截图会原样发送给视觉模型，其余图片生成受限 JPEG 推理副本。每次 AI 请求会在本机保存文字输入、模型原始回答、解析/校验结果、错误和重试关联；图片不会重复保存 Base64，仅保存本地材料指纹。最近调用可在「AI 数据说明」查看，日志最多保留 5000 次且可能含招聘、复盘和邮件内容。
+
+页面右上角「运行与日志」可查看材料识别、邮件扫描、自动邮件处理与面试准备 Agent 的执行链路、步骤、错误码和关联 AI 调用。系统使用 `trace_id` 串联同一次操作；普通运行日志默认只保留摘要，敏感密钥字段会脱敏，最近保留 20,000 条 info/debug 与 10,000 条 warn/error。
 
 AI 助教的知识检索使用本机 SQLite FTS5 trigram/BM25 与 LIKE 回退做混合召回，再按题目命中、来源和历史反馈重排。回答使用本地资料时会标注 `[K1]` 并在消息下方显示可点击来源；👍/👎 只作为有界排序信号，不会保存一份新的提问原文。当前脱敏固定集 Recall@5 和 MRR 均为 1.0，暂不引入 Embedding 或外部向量数据库。
 

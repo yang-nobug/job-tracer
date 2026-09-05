@@ -18,15 +18,35 @@ interface SettingsResponse {
   recording: { ossConfigured: boolean; asrConfigured: boolean }
 }
 
-interface AiRun {
+interface AiCallRecord {
   id: number
   task: string
+  stage: string
+  attempt: number
+  retry_of_call_id: number | null
   model: string | null
   duration_ms: number
   total_tokens: number | null
-  status: 'succeeded' | 'failed'
+  status: 'succeeded' | 'validation_failed' | 'provider_failed'
   error_type: string | null
+  error_message: string | null
   created_at: string
+}
+
+interface AiCallDetail extends AiCallRecord {
+  prompt_hash: string
+  provider_request_id: string | null
+  provider_attempts: number | null
+  finish_reason: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  request_messages_json: string
+  response_schema_json: string | null
+  request_options_json: string
+  raw_response: string | null
+  parsed_response_json: string | null
+  validated_response_json: string | null
+  finished_at: string
 }
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -34,7 +54,10 @@ const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 const visible = computed({ get: () => props.modelValue, set: value => emit('update:modelValue', value) })
 const loading = ref(false)
 const tasks = ref<TaskSetting[]>([])
-const runs = ref<AiRun[]>([])
+const calls = ref<AiCallRecord[]>([])
+const selectedCall = ref<AiCallDetail | null>(null)
+const detailLoading = ref(false)
+const detailOpen = ref(false)
 const recording = ref<SettingsResponse['recording']>({ ossConfigured: false, asrConfigured: false })
 const saving = ref(new Set<string>())
 
@@ -51,16 +74,33 @@ async function load(): Promise<void> {
   try {
     const [settings, recentRuns] = await Promise.all([
       api.get<SettingsResponse>('/ai/settings'),
-      api.get<AiRun[]>('/ai/runs?limit=20')
+      api.get<AiCallRecord[]>('/ai/calls?limit=30')
     ])
     tasks.value = settings.tasks.filter(task => task.visible)
     recording.value = settings.recording
-    runs.value = recentRuns
+    calls.value = recentRuns
   } catch (error) {
     ElMessage.error((error as Error).message)
   } finally {
     loading.value = false
   }
+}
+
+async function showCall(id: number): Promise<void> {
+  detailLoading.value = true
+  detailOpen.value = true
+  try { selectedCall.value = await api.get<AiCallDetail>(`/ai/calls/${id}`) }
+  catch (error) { ElMessage.error((error as Error).message) }
+  finally { detailLoading.value = false }
+}
+
+function pretty(value: string | null): string {
+  if (!value) return '—'
+  try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
+}
+
+function statusLabel(status: AiCallRecord['status']): string {
+  return status === 'succeeded' ? '通过' : status === 'validation_failed' ? '结构失败' : '调用失败'
 }
 
 async function changeTask(task: TaskSetting, enabled: string | number | boolean): Promise<void> {
@@ -120,15 +160,16 @@ watch(() => props.modelValue, open => { if (open) void load() })
         <el-tag :type="recording.asrConfigured ? 'success' : 'info'">ASR {{ recording.asrConfigured ? '已配置' : '未配置' }}</el-tag>
       </div>
 
-      <h3>本机 AI 调用记录</h3>
-      <p class="explain">只记录任务、模型、耗时、token、状态和提示内容哈希，不保存提示词、截图、录音、转写或模型原始回答；最多保留最近 5000 次。</p>
-      <el-table v-if="runs.length" :data="runs" size="small" max-height="250">
+      <h3>本机 AI 调用审计</h3>
+      <p class="explain">保存每次调用的完整文字输入、模型原始输出、结构校验结果和重试关系，最多保留最近 5000 次。图片不会重复保存 Base64，只记录本地材料指纹；日志可能含招聘、复盘和邮件内容，请仅在本机查看。</p>
+      <el-table v-if="calls.length" :data="calls" size="small" max-height="250">
         <el-table-column label="时间" width="170">
           <template #default="scope">{{ formatTime(scope.row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="任务" min-width="130">
           <template #default="scope">{{ taskLabel(scope.row.task) }}</template>
         </el-table-column>
+        <el-table-column prop="stage" label="阶段" min-width="130" show-overflow-tooltip />
         <el-table-column prop="model" label="模型" min-width="150" show-overflow-tooltip />
         <el-table-column label="耗时" width="90">
           <template #default="scope">{{ (scope.row.duration_ms / 1000).toFixed(1) }}s</template>
@@ -137,13 +178,35 @@ watch(() => props.modelValue, open => { if (open) void load() })
         <el-table-column label="状态" width="90">
           <template #default="scope">
             <el-tag :type="scope.row.status === 'succeeded' ? 'success' : 'danger'" size="small">
-              {{ scope.row.status === 'succeeded' ? '成功' : scope.row.error_type || '失败' }}
+              {{ statusLabel(scope.row.status) }}
             </el-tag>
           </template>
+        </el-table-column>
+        <el-table-column label="详情" width="70">
+          <template #default="scope"><el-button link type="primary" @click="showCall(scope.row.id)">查看</el-button></template>
         </el-table-column>
       </el-table>
       <el-empty v-else description="还没有 AI 调用记录" :image-size="60" />
     </div>
+
+    <el-dialog v-model="detailOpen" title="AI 调用详情" width="900px" append-to-body>
+      <div v-loading="detailLoading" class="call-detail" v-if="selectedCall">
+        <p><b>{{ taskLabel(selectedCall.task) }}</b> · {{ selectedCall.stage }} · 第 {{ selectedCall.attempt }} 次调用</p>
+        <el-alert v-if="selectedCall.error_message" type="error" :closable="false" :title="selectedCall.error_message" />
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="模型">{{ selectedCall.model || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="耗时">{{ (selectedCall.duration_ms / 1000).toFixed(1) }}s</el-descriptions-item>
+          <el-descriptions-item label="Token">{{ selectedCall.total_tokens ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item label="服务重试">{{ selectedCall.provider_attempts ?? 1 }} 次请求</el-descriptions-item>
+          <el-descriptions-item label="重试来源" :span="3">{{ selectedCall.retry_of_call_id ? `调用 #${selectedCall.retry_of_call_id}` : '首次调用' }}</el-descriptions-item>
+        </el-descriptions>
+        <details open><summary>请求消息</summary><pre>{{ pretty(selectedCall.request_messages_json) }}</pre></details>
+        <details><summary>结构 Schema</summary><pre>{{ pretty(selectedCall.response_schema_json) }}</pre></details>
+        <details open><summary>模型原始输出</summary><pre>{{ selectedCall.raw_response || '—' }}</pre></details>
+        <details><summary>解析后的 JSON</summary><pre>{{ pretty(selectedCall.parsed_response_json) }}</pre></details>
+        <details><summary>通过校验后的结果</summary><pre>{{ pretty(selectedCall.validated_response_json) }}</pre></details>
+      </div>
+    </el-dialog>
   </el-dialog>
 </template>
 
@@ -157,4 +220,8 @@ h3 { margin: 20px 0 10px; font-size: 15px; }
 .task-copy b { margin-right: 8px; }
 .task-copy p, .explain { margin: 5px 0 0; color: #606266; font-size: 12px; line-height: 1.7; }
 .service-tags { display: flex; gap: 8px; margin-top: 10px; }
+.call-detail { max-height: 70vh; overflow: auto; }
+.call-detail details { margin-top: 12px; }
+.call-detail summary { cursor: pointer; color: #409eff; font-weight: 600; }
+.call-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; padding: 10px; border-radius: 6px; background: #f5f7fa; font-size: 12px; line-height: 1.5; }
 </style>

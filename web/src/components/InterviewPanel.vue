@@ -186,7 +186,8 @@ watch(
         <span class="iv-time">{{ iv.scheduled_at }}</span>
         <el-tag v-if="iv.done" type="success" size="small">已完成</el-tag>
         <span class="iv-spacer" />
-        <el-button link type="primary" size="small" @click="prepInterview = iv">✨ AI 准备</el-button>
+        <el-button v-if="!iv.done" link type="primary" size="small" @click="prepInterview = iv">✨ AI 准备</el-button>
+        <span v-else class="completed-hint">面试已完成，建议补充复盘</span>
         <el-button link size="small" @click="editingInterview = iv">📝 复盘</el-button>
         <el-button link size="small" @click="toggleDone(iv)">{{ iv.done ? '标记未完成' : '标记完成' }}</el-button>
         <el-button link type="danger" size="small" @click="removeInterview(iv)">删除</el-button>
@@ -323,6 +324,7 @@ watch(
 .iv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .iv-round { font-weight: 600; }
 .iv-time { color: #909399; font-size: 13px; }
+.completed-hint { color: #909399; font-size: 12px; }
 .iv-spacer { flex: 1; }
 .iv-loc { font-size: 13px; color: #606266; margin-top: 4px; }
 .checklist { margin-top: 10px; border-top: 1px dashed #ebeef5; padding-top: 8px; }

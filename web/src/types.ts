@@ -61,6 +61,10 @@ export interface Resume {
   size: number
   note: string | null
   uploaded_at: string
+  extraction_status?: 'pending' | 'extracting' | 'completed' | 'failed' | 'unsupported'
+  extraction_error?: string | null
+  extracted_at?: string | null
+  text_available?: 0 | 1 | boolean
 }
 
 export interface AppEvent {
@@ -103,7 +107,7 @@ export type PrepAgentStatus =
 
 export interface PrepAgentEvidence {
   ref: string
-  type: 'knowledge_item' | 'review' | 'mastery' | 'application' | 'interview'
+  type: 'knowledge_item' | 'review' | 'mastery' | 'application' | 'interview' | 'project' | 'resume'
   title: string
   excerpt: string
   source_id?: number | null
@@ -112,6 +116,20 @@ export interface PrepAgentEvidence {
   company?: string
   position?: string
   round?: string
+  code_session_id?: string
+  code_evidence_refs?: string[]
+}
+
+export interface PrepAgentReference {
+  ref: string
+  type: 'application' | 'interview' | 'review' | 'mastery' | 'knowledge_item' | 'project' | 'resume'
+  title: string
+  subtitle: string
+  excerpt: string
+  source_id?: number | null
+  item_id?: number | null
+  code_session_id?: string | null
+  code_evidence_refs?: string[]
 }
 
 export interface PrepPlanItem {
@@ -127,6 +145,41 @@ export interface PrepPlanItem {
 export interface PrepPlan {
   summary: string
   items: PrepPlanItem[]
+}
+
+export interface PrepEvidenceStatement {
+  text: string
+  source_refs: string[]
+  confidence: number
+}
+
+export interface PrepRoleProfile {
+  responsibilities: PrepEvidenceStatement[]
+  must_have_skills: PrepEvidenceStatement[]
+  nice_to_have_skills: PrepEvidenceStatement[]
+  project_signals: PrepEvidenceStatement[]
+  likely_interview_topics: string[]
+  unknowns: string[]
+}
+
+export interface PrepGap {
+  skill: string
+  current_level: 'unknown' | 'weak' | 'developing' | 'ready'
+  target_level: 'review' | 'practice' | 'interview_ready'
+  reason: string
+  evidence_refs: string[]
+  confidence: number
+}
+
+export interface PrepGapAnalysis {
+  gaps: PrepGap[]
+  strengths: PrepGap[]
+  warnings: string[]
+}
+
+export interface PrepCriticResult {
+  verdict: 'pass' | 'warn' | 'revise'
+  issues: Array<{ code: string; item_index: number | null; message: string }>
 }
 
 export interface PrepAgentStep {
@@ -148,10 +201,13 @@ export interface PrepAgentRun {
   interview_id: number
   status: PrepAgentStatus
   goal: string
-  constraints: { focus: string[] }
+  constraints: { focus: string[]; project_ids: number[] }
   current_node: string | null
   plan: PrepPlan | null
   evidence: PrepAgentEvidence[]
+  role_profile: PrepRoleProfile | null
+  gap_analysis: PrepGapAnalysis | null
+  critic: PrepCriticResult | null
   warnings: string[]
   error_type: string | null
   error_message: string | null
@@ -300,6 +356,97 @@ export interface UpcomingItem {
   application_id: number | null
   company: string
   position: string
+}
+
+export interface ProjectArchiveSummary {
+  id: number
+  name: string
+  description: string
+  source_path: string
+  root_realpath: string
+  status: 'ready' | 'scanning' | 'failed' | 'archived'
+  last_scan_id: number | null
+  created_at: string
+  updated_at: string
+  scan_status?: 'succeeded' | 'partial_success' | 'failed' | null
+  files_indexed?: number | null
+  files_seen?: number | null
+  bytes_read?: number | null
+  truncated?: 0 | 1 | null
+  scanned_at?: string | null
+  symbol_count?: number
+}
+
+export interface ProjectCodeFile {
+  id: number
+  relative_path: string
+  language: string
+  size_bytes: number
+  line_count: number
+  is_generated: 0 | 1
+  indexed_at: string
+}
+
+export interface ProjectCodeSearchResult {
+  id: number
+  relative_path: string
+  start_line: number
+  end_line: number
+  content: string
+  symbol_name: string | null
+  symbol_kind: string | null
+}
+
+export interface ProjectFact {
+  id: number
+  project_id: number
+  fact_type: 'architecture' | 'responsibility' | 'technology' | 'decision' | 'metric' | 'risk'
+  title: string
+  content: string
+  confidence: 'inferred' | 'user_confirmed'
+  created_at: string
+  updated_at: string
+}
+
+export type CodeReadingMode = 'explain' | 'architecture' | 'interview_story'
+export interface CodeReadingEvidence {
+  evidence_ref: string
+  relative_path: string
+  start_line: number
+  end_line: number
+  excerpt: string
+}
+export interface CodeReadingClaim {
+  claim_kind: 'code_fact' | 'inference' | 'user_confirmation_required'
+  statement: string
+  confidence: 'high' | 'medium' | 'low'
+  evidence_refs: string[]
+  caveat: string | null
+}
+export interface CodeReadingFinal {
+  overview: string
+  answer: string
+  claims: Array<{ kind: CodeReadingClaim['claim_kind']; statement: string; confidence: CodeReadingClaim['confidence']; evidence_refs: string[]; caveat: string | null }>
+  follow_up_questions: string[]
+}
+export interface CodeReadingSession {
+  id: string
+  project_id: number
+  question: string
+  output_mode: CodeReadingMode
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  tool_calls_used: number
+  bytes_read: number
+  max_tool_calls: number
+  max_bytes_read: number
+  error_message: string | null
+  final: CodeReadingFinal | null
+  evidence: CodeReadingEvidence[]
+  claims: CodeReadingClaim[]
+  steps: Array<{ id: number; sequence: number; kind: 'model' | 'tool' | 'final'; tool_name: string | null; status: 'succeeded' | 'failed'; error_message: string | null; created_at: string }>
+  created_at: string
+  updated_at: string
+  finished_at: string | null
 }
 
 export interface Stats {

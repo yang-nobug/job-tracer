@@ -5,6 +5,7 @@ import type { MailRecruitmentExtraction } from './mail-extraction-contracts.js'
 import type { MailScheduleReview } from './mail-schedule-review.js'
 import { canAutomaticallyConfirm } from './mail-automation-policy.js'
 import { hasQqAuthorizationCode } from './mail-credential-store.js'
+import { createOperationRun, finishOperationRun } from './observability.js'
 
 interface AutomationSettingsRow {
   enabled: number
@@ -149,6 +150,8 @@ async function localApi<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function executeCycle(): Promise<MailAutomationResult> {
   const startedAt = now()
+  const operation = createOperationRun({ operationType: 'mail_automation_cycle', triggerType: 'scheduled', inputSummary: { max_scans: MAX_SCANS_PER_RUN, max_analyses: MAX_ANALYSES_PER_RUN } })
+  const tracingHeaders = { 'x-trace-id': operation.traceId, 'x-automation-run': '1' }
   db.prepare(`UPDATE mail_automation_settings SET last_run_at = ?, last_status = 'running',
     last_error_code = NULL, last_error_message = NULL, updated_at = ? WHERE id = 1`)
     .run(startedAt, startedAt)
@@ -156,7 +159,7 @@ async function executeCycle(): Promise<MailAutomationResult> {
     let scan: ScanResponse | null = null
     let scannedCount = 0
     for (let attempt = 0; attempt < MAX_SCANS_PER_RUN; attempt++) {
-      scan = await localApi<ScanResponse>('/api/mail/scan', { method: 'POST', body: '{}' })
+      scan = await localApi<ScanResponse>('/api/mail/scan', { method: 'POST', body: '{}', headers: tracingHeaders })
       scannedCount += scan.scannedCount
       if (!scan.hasMore) break
     }
@@ -176,7 +179,7 @@ async function executeCycle(): Promise<MailAutomationResult> {
         analyzedCount++
         try {
           candidate = await localApi<AutomationCandidate>(`/api/mail/candidates/${candidate.id}/analyze`, {
-            method: 'POST', body: '{}'
+            method: 'POST', body: '{}', headers: tracingHeaders
           })
         } catch {
           reviewCount++
@@ -193,7 +196,7 @@ async function executeCycle(): Promise<MailAutomationResult> {
       }
       try {
         await localApi(`/api/mail/candidates/${candidate.id}/confirm-schedule`, {
-          method: 'POST', body: JSON.stringify(schedulePayload(candidate))
+          method: 'POST', body: JSON.stringify(schedulePayload(candidate)), headers: tracingHeaders
         })
         confirmedCount++
       } catch {
@@ -206,13 +209,16 @@ async function executeCycle(): Promise<MailAutomationResult> {
       last_scanned_count = ?, last_analyzed_count = ?, last_confirmed_count = ?,
       last_review_count = ?, last_error_code = NULL, last_error_message = NULL, updated_at = ?
       WHERE id = 1`).run(scannedCount, analyzedCount, confirmedCount, reviewCount, finishedAt)
-    return { scannedCount, analyzedCount, confirmedCount, reviewCount }
+    const result = { scannedCount, analyzedCount, confirmedCount, reviewCount }
+    finishOperationRun(operation.id, { status: reviewCount ? 'partial_success' : 'succeeded', resultSummary: result })
+    return result
   } catch (error) {
     const code = error instanceof AutomationRequestError ? error.code : 'MAIL_AUTOMATION_ERROR'
     const message = error instanceof AutomationRequestError ? error.message : '自动处理招聘邮件失败'
     db.prepare(`UPDATE mail_automation_settings SET last_status = 'failed',
       last_error_code = ?, last_error_message = ?, updated_at = ? WHERE id = 1`)
       .run(code, message.slice(0, 500), now())
+    finishOperationRun(operation.id, { status: 'failed', errorCode: code, errorMessage: message })
     throw error
   }
 }

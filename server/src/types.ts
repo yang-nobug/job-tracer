@@ -75,6 +75,10 @@ export interface Resume {
   size: number
   note: string | null
   uploaded_at: string
+  extraction_status?: 'pending' | 'extracting' | 'completed' | 'failed' | 'unsupported'
+  extraction_error?: string | null
+  extracted_at?: string | null
+  text_available?: 0 | 1 | boolean
 }
 
 export interface AppEvent {

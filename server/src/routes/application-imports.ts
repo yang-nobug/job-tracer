@@ -4,6 +4,7 @@ import { db } from '../db.js'
 import { IMPORT_LIMITS } from '../../../shared/application-import.js'
 import { activeImports, cleanupExpiredImports, createImport, deleteImport, getImport, getImportRow, getMaterials, ImportError, materialPath } from '../application-materials.js'
 import { analyzeImport, extractionConfig } from '../application-extraction.js'
+import { createOperationRun, finishOperationRun, finishOperationStep, runWithTrace, startOperationStep } from '../observability.js'
 
 export const applicationImportsRouter = Router()
 const upload = multer({
@@ -51,13 +52,23 @@ applicationImportsRouter.post('/:id/analyze', async (req, res) => {
   if (activeImports.size) throw new ImportError('已有识别任务进行中，请稍后再试', 409)
   const controller = new AbortController()
   activeImports.set(id, controller)
+  const operation = createOperationRun({ operationType: 'application_import_analysis', parentEntityType: 'application_import', parentEntityId: id,
+    inputSummary: { import_id: id, source_count: getMaterials(id).length } })
+  const stepId = startOperationStep({ operationRunId: operation.id, stepName: 'ai_extract', inputSummary: { import_id: id } })
   const onClose = () => { if (!res.writableEnded) controller.abort() }
   res.on('close', onClose)
   try {
-    const analysis = await analyzeImport(id, controller.signal)
+    const analysis = await runWithTrace({ traceId: operation.traceId, operationRunId: operation.id, operationStepId: stepId }, () => analyzeImport(id, controller.signal))
     controller.signal.throwIfAborted()
     db.prepare('UPDATE application_imports SET analysis_json=? WHERE id=? AND application_id IS NULL').run(JSON.stringify(analysis), id)
+    finishOperationStep(stepId, { status: 'succeeded', outputSummary: { target_state: analysis.extraction.target_state, model: analysis.model } })
+    finishOperationRun(operation.id, { status: 'succeeded', resultSummary: { import_id: id, target_state: analysis.extraction.target_state } })
     res.json(getImport(id))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '材料识别失败'
+    finishOperationStep(stepId, { status: 'failed', errorCode: error instanceof ImportError ? 'IMPORT_ERROR' : 'IMPORT_ANALYSIS_FAILED', errorMessage: message })
+    finishOperationRun(operation.id, { status: 'failed', errorCode: error instanceof ImportError ? 'IMPORT_ERROR' : 'IMPORT_ANALYSIS_FAILED', errorMessage: message })
+    throw error
   } finally { res.off('close', onClose); activeImports.delete(id) }
 })
 applicationImportsRouter.delete('/:id', (req, res) => { deleteImport(String(req.params.id)); res.json({ ok: true }) })

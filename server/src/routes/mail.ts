@@ -18,6 +18,7 @@ import {
   ScheduleValidationError, validateRecruitmentScheduleInput,
   type RecruitmentScheduleInput
 } from '../recruitment-schedule.js'
+import { createOperationRun, finishOperationRun, finishOperationStep, runWithTrace, startOperationStep } from '../observability.js'
 
 interface MailAccountRow {
   id: number
@@ -493,7 +494,7 @@ mailRouter.patch('/schedule/:id/status', (req: Request, res: Response) => {
   res.json(publicSchedule(row))
 })
 
-mailRouter.post('/mail/scan', async (_req: Request, res: Response) => {
+mailRouter.post('/mail/scan', async (req: Request, res: Response) => {
   const account = getQqAccount()
   if (!account) {
     res.status(422).json({ message: '请先连接 QQ 邮箱', code: 'MAIL_NOT_CONFIGURED' })
@@ -505,8 +506,11 @@ mailRouter.post('/mail/scan', async (_req: Request, res: Response) => {
   }
   scanningAccounts.add(account.id)
   const startedAt = now()
-  const runResult = db.prepare(`INSERT INTO mail_scan_runs (account_id, status, started_at)
-    VALUES (?, 'running', ?)`).run(account.id, startedAt)
+  const operation = createOperationRun({ operationType: 'mail_scan', triggerType: req.get('x-automation-run') === '1' ? 'scheduled' : 'manual',
+    parentEntityType: 'mail_account', parentEntityId: account.id, inputSummary: { mailbox: account.mailbox } })
+  const scanStep = startOperationStep({ operationRunId: operation.id, stepName: 'imap_fetch_envelopes', inputSummary: { mailbox: account.mailbox } })
+  const runResult = db.prepare(`INSERT INTO mail_scan_runs (account_id, operation_run_id, status, started_at)
+    VALUES (?, ?, 'running', ?)`).run(account.id, operation.id, startedAt)
   const runId = Number(runResult.lastInsertRowid)
 
   try {
@@ -523,6 +527,7 @@ mailRouter.post('/mail/scan', async (_req: Request, res: Response) => {
       authorizationCode,
       state ? { uidValidity: state.uid_validity, lastUid: state.last_uid } : null
     )
+    finishOperationStep(scanStep, { status: 'succeeded', outputSummary: { scanned_count: batch.scanned.length, has_more: batch.hasMore } })
 
     let candidateCount = 0
     let newCandidateCount = 0
@@ -576,6 +581,7 @@ mailRouter.post('/mail/scan', async (_req: Request, res: Response) => {
       db.prepare(`UPDATE mail_accounts SET status = 'connected', last_tested_at = ?,
         last_error_code = NULL, updated_at = ? WHERE id = ?`).run(finishedAt, finishedAt, account.id)
     })()
+    finishOperationRun(operation.id, { status: 'succeeded', resultSummary: { scanned_count: batch.scanned.length, candidate_count: candidateCount, new_candidate_count: newCandidateCount, has_more: batch.hasMore } })
 
     res.json({
       scannedCount: batch.scanned.length,
@@ -586,6 +592,9 @@ mailRouter.post('/mail/scan', async (_req: Request, res: Response) => {
     })
   } catch (error) {
     const code = error instanceof MailConnectionError ? error.code : 'MAIL_SCAN_ERROR'
+    const message = error instanceof Error ? error.message : '邮箱扫描失败'
+    finishOperationStep(scanStep, { status: 'failed', errorCode: code, errorMessage: message })
+    finishOperationRun(operation.id, { status: 'failed', errorCode: code, errorMessage: message })
     db.prepare(`UPDATE mail_scan_runs SET status = 'failed', error_code = ?, finished_at = ?
       WHERE id = ?`).run(code, now(), runId)
     if (error instanceof MailConnectionError) {
@@ -617,6 +626,10 @@ mailRouter.post('/mail/candidates/:id/analyze', async (req: Request, res: Respon
   }
 
   analyzingCandidates.add(candidateId)
+  const operation = createOperationRun({ operationType: 'mail_candidate_analysis', parentEntityType: 'mail_candidate', parentEntityId: candidateId,
+    inputSummary: { subject: candidate.subject, sender: candidate.sender } })
+  const fetchStep = startOperationStep({ operationRunId: operation.id, stepName: 'imap_fetch_body', inputSummary: { candidate_id: candidateId } })
+  let analysisStep: number | null = null
   const updatedAt = now()
   db.prepare(`INSERT INTO mail_candidate_analyses (candidate_id, status, updated_at)
     VALUES (?, 'running', ?)
@@ -637,12 +650,15 @@ mailRouter.post('/mail/candidates/:id/analyze', async (req: Request, res: Respon
     const body = await fetchQqMessageBody(
       account.email, authorizationCode, candidate.uid_validity, candidate.uid
     )
-    const analysis = await analyzeRecruitmentMail({
+    finishOperationStep(fetchStep, { status: 'succeeded', outputSummary: { body_characters: body.plainText.length + body.html.length, message_size: body.messageSize, truncated: body.truncated } })
+    analysisStep = startOperationStep({ operationRunId: operation.id, stepName: 'ai_extract_and_review', inputSummary: { candidate_id: candidateId } })
+    const analysis = await runWithTrace({ traceId: operation.traceId, operationRunId: operation.id, operationStepId: analysisStep }, () => analyzeRecruitmentMail({
       subject: candidate.subject,
       sender: candidate.sender,
       sentAt: candidate.sent_at,
       body
-    })
+    }))
+    finishOperationStep(analysisStep, { status: 'succeeded', outputSummary: { relevant: analysis.extraction.relevant, review: analysis.scheduleReview?.decision ?? null } })
     const analyzedAt = now()
     db.prepare(`UPDATE mail_candidate_analyses SET status = 'succeeded', extraction_json = ?,
       body_hash = ?, body_truncated = ?, model = ?, prompt_version = ?, error_code = NULL,
@@ -674,12 +690,16 @@ mailRouter.post('/mail/candidates/:id/analyze', async (req: Request, res: Respon
           .run(JSON.stringify(analysis.extraction), now(), candidateId)
       }
     }
+    finishOperationRun(operation.id, { status: 'succeeded', resultSummary: { candidate_id: candidateId, relevant: analysis.extraction.relevant, auto_confirmed: Boolean(analysis.scheduleReview && canAutomaticallyConfirm(analysis.extraction, analysis.scheduleReview)) } })
     const saved = db.prepare(`${CANDIDATE_SELECT} WHERE c.id = ?`).get(candidateId) as MailCandidateRow
     res.json(publicCandidate(saved, matchableApplications()))
   } catch (error) {
     const failure = error instanceof MailConnectionError
       ? { status: 422, code: error.code, message: error.message }
       : mailAnalysisError(error)
+    if (analysisStep) finishOperationStep(analysisStep, { status: 'failed', errorCode: failure.code, errorMessage: failure.message })
+    else finishOperationStep(fetchStep, { status: 'failed', errorCode: failure.code, errorMessage: failure.message })
+    finishOperationRun(operation.id, { status: 'failed', errorCode: failure.code, errorMessage: failure.message })
     console.warn(`[mail-analysis] candidate_id=${candidateId} failed code=${failure.code}`)
     db.prepare(`UPDATE mail_candidate_analyses SET status = 'failed', extraction_json = NULL,
       body_hash = NULL, body_truncated = 0, model = NULL, prompt_version = NULL,

@@ -1,7 +1,8 @@
 import { db, now } from './db.js'
 import {
-  completeChat, completeStructured, type AiCompletionResult, type ChatMessage
+  AiError, completeChat, completeStructured, type AiCompletionResult, type ChatMessage
 } from './ai.js'
+import { createOperationRun, currentTrace, finishOperationRun, finishOperationStep, runWithTrace, startOperationStep } from './observability.js'
 import { searchKnowledge, type RetrievedKnowledge } from './knowledge-retrieval.js'
 import { loadPrompt } from './prompt-loader.js'
 import { buildPrepAgentContext, PrepAgentError } from './prep-agent-service.js'
@@ -52,6 +53,8 @@ interface PrepTaskRow {
   generation_completion_tokens?: number
   generation_total_tokens?: number
   quality_json?: string | null
+  trace_id?: string | null
+  operation_run_id?: number | null
 }
 
 export interface PrepTaskProgress {
@@ -87,7 +90,7 @@ function taskSelect(where: string): string {
       s.guide_version, s.generation_status, s.generation_stage, s.generation_progress,
       s.generation_error, s.generation_started_at, s.generation_model_calls,
       s.generation_prompt_tokens, s.generation_completion_tokens, s.generation_total_tokens,
-      s.quality_json,
+      s.quality_json, s.trace_id, s.operation_run_id,
       COALESCE((SELECT COUNT(*) FROM prep_task_messages m WHERE m.session_id=s.id), 0) AS message_count
     FROM prep_agent_plan_items p
     JOIN prep_agent_runs r ON r.id=p.run_id AND r.status='completed'
@@ -270,6 +273,10 @@ function recoverInterruptedGeneration(row: PrepTaskRow): PrepTaskRow {
       generation_error=?, updated_at=? WHERE id=?`).run(
       '服务在生成过程中重新启动，请点击重试；已有旧指引没有被覆盖。', now(), row.session_id
     )
+    if (row.operation_run_id) finishOperationRun(row.operation_run_id, {
+      status: 'failed', errorCode: 'INTERRUPTED', errorMessage: '服务在生成课程过程中重启',
+      resultSummary: { plan_item_id: row.id, generation_stage: 'interrupted' }
+    })
     return taskRow(row.id)
   }
   return row
@@ -338,22 +345,40 @@ async function structuredStage<T>(input: Record<string, unknown>, options: {
 }): Promise<T> {
   const serialized = JSON.stringify(input)
   if (serialized.length > 160_000) throw new PrepAgentError('准备任务上下文过长，请精简 JD 或知识资料')
-  const result = await completeStructured([
-    {
-      role: 'system',
-      content: `${loadPrompt(options.prompt)}\n\nJSON Schema:\n${JSON.stringify(options.schema)}`
-    },
-    { role: 'user', content: `<untrusted_task_context_json>\n${serialized}\n</untrusted_task_context_json>` }
-  ], {
-    task: 'interviewPrepAgent',
-    schemaName: options.schemaName,
-    schema: options.schema,
-    validate: options.validate,
-    maxOutputTokens: 8192,
-    timeoutMs: 180_000
-  })
-  recordCompletion(options.metrics, result.completion)
-  return result.value
+  const trace = currentTrace()
+  const stepId = trace?.operationRunId
+    ? startOperationStep({ operationRunId: trace.operationRunId, stepName: options.schemaName, inputSummary: { input_characters: serialized.length } })
+    : undefined
+  try {
+    const result = await runWithTrace({
+      traceId: trace?.traceId ?? 'system_prep_task', operationRunId: trace?.operationRunId, operationStepId: stepId
+    }, () => completeStructured([
+      {
+        role: 'system',
+        content: `${loadPrompt(options.prompt)}\n\nJSON Schema:\n${JSON.stringify(options.schema)}`
+      },
+      { role: 'user', content: `<untrusted_task_context_json>\n${serialized}\n</untrusted_task_context_json>` }
+    ], {
+      task: 'interviewPrepAgent',
+      schemaName: options.schemaName,
+      schema: options.schema,
+      validate: options.validate,
+      maxOutputTokens: 8192,
+      timeoutMs: 180_000
+    }))
+    recordCompletion(options.metrics, result.completion)
+    if (stepId) finishOperationStep(stepId, {
+      status: 'succeeded',
+      outputSummary: { model: result.completion.model, logical_attempts: result.attempts, provider_attempts: result.completion.providerAttempts }
+    })
+    return result.value
+  } catch (error) {
+    if (stepId) finishOperationStep(stepId, {
+      status: 'failed', errorCode: error instanceof AiError ? error.kind : 'PREP_TASK_STAGE_FAILED',
+      errorMessage: error instanceof Error ? error.message : '课程生成阶段失败'
+    })
+    throw error
+  }
 }
 
 async function generateModule(
@@ -501,6 +526,11 @@ async function runGuideGeneration(planItemId: number, sessionId: number, force: 
       )
       if (force) db.prepare('DELETE FROM prep_task_messages WHERE session_id=?').run(sessionId)
     })()
+    const operationRunId = currentTrace()?.operationRunId
+    if (operationRunId) finishOperationRun(operationRunId, {
+      status: 'succeeded',
+      resultSummary: { plan_item_id: planItemId, guide_version: 2, model_calls: metrics.modelCalls, quality_verdict: guide.quality_review.verdict }
+    })
   } catch (error) {
     const message = clipped((error as Error).message, 500) || '执行指引生成失败'
     db.prepare(`UPDATE prep_task_sessions SET generation_status='failed', generation_stage='failed',
@@ -509,6 +539,11 @@ async function runGuideGeneration(planItemId: number, sessionId: number, force: 
       message, metrics.modelCalls, metrics.promptTokens, metrics.completionTokens,
       metrics.totalTokens, now(), sessionId
     )
+    const operationRunId = currentTrace()?.operationRunId
+    if (operationRunId) finishOperationRun(operationRunId, {
+      status: 'failed', errorCode: error instanceof AiError ? error.kind : 'PREP_TASK_GENERATION_FAILED', errorMessage: message,
+      resultSummary: { plan_item_id: planItemId, model_calls: metrics.modelCalls, generation_stage: 'failed' }
+    })
   }
 }
 
@@ -519,11 +554,15 @@ export function generatePrepTaskGuide(planItemId: number, force = false): Record
   if (activeGenerations.has(planItemId) || row.generation_status === 'running') return getPrepTaskSession(planItemId)
   if (row.guide_json && !force) return getPrepTaskSession(planItemId)
   const timestamp = now()
+  const operation = createOperationRun({ operationType: 'prep_task_guide_generation', parentEntityType: 'prep_agent_plan_item', parentEntityId: planItemId,
+    inputSummary: { plan_item_id: planItemId, force, title: row.title } })
   db.prepare(`UPDATE prep_task_sessions SET generation_status='running', generation_stage='queued',
     generation_progress=1, generation_error=NULL, generation_started_at=?,
     generation_model_calls=0, generation_prompt_tokens=0, generation_completion_tokens=0,
-    generation_total_tokens=0, updated_at=? WHERE id=?`).run(timestamp, timestamp, sessionId)
-  const running = runGuideGeneration(planItemId, sessionId, force)
+    generation_total_tokens=0, trace_id=?, operation_run_id=?, updated_at=? WHERE id=?`).run(
+    timestamp, operation.traceId, operation.id, timestamp, sessionId
+  )
+  const running = runWithTrace({ traceId: operation.traceId, operationRunId: operation.id }, () => runGuideGeneration(planItemId, sessionId, force))
     .finally(() => { activeGenerations.delete(planItemId) })
   activeGenerations.set(planItemId, running)
   return getPrepTaskSession(planItemId)

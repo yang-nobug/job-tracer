@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { db, getSetting, now, setSetting } from './db.js'
+import { currentTrace } from './observability.js'
 
 // 火山方舟（OpenAI 兼容协议）配置与统一调用封装。
 // 配置文件：项目根目录 config.json（参考 config.example.json，已 gitignore）。
@@ -20,6 +21,7 @@ export type AiTask =
   | 'recordingReview'
   | 'reviewAdvice'
   | 'interviewPrepAgent'
+  | 'codeReading'
   | 'mailRecruitmentExtract'
   | 'mailScheduleReview'
 
@@ -61,7 +63,8 @@ export interface ArkConfig {
 
 export const AI_TASKS: AiTask[] = [
   'applicationImport', 'jdParse', 'knowledgeExtract', 'answerGenerate',
-  'tutor', 'recordingReview', 'reviewAdvice', 'interviewPrepAgent', 'mailRecruitmentExtract', 'mailScheduleReview'
+  'tutor', 'recordingReview', 'reviewAdvice', 'interviewPrepAgent', 'codeReading',
+  'mailRecruitmentExtract', 'mailScheduleReview'
 ]
 
 const TASK_DEFAULTS: Record<AiTask, Required<Omit<ArkTaskConfig, 'model' | 'maxImages' | 'enabled'>>> = {
@@ -73,6 +76,7 @@ const TASK_DEFAULTS: Record<AiTask, Required<Omit<ArkTaskConfig, 'model' | 'maxI
   recordingReview: { outputMode: 'text', maxOutputTokens: 8192, temperature: 0.2, timeoutMs: 300_000, thinking: 'disabled' },
   reviewAdvice: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.3, timeoutMs: 90_000, thinking: 'disabled' },
   interviewPrepAgent: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.2, timeoutMs: 90_000, thinking: 'disabled' },
+  codeReading: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.1, timeoutMs: 90_000, thinking: 'disabled' },
   mailRecruitmentExtract: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0, timeoutMs: 90_000, thinking: 'disabled' },
   mailScheduleReview: { outputMode: 'text', maxOutputTokens: 2048, temperature: 0, timeoutMs: 60_000, thinking: 'disabled' }
 }
@@ -259,6 +263,8 @@ export interface AiCompletionResult {
   usage: AiUsage | null
   requestId: string | null
   durationMs: number
+  providerAttempts: number
+  auditCallId?: number
 }
 
 export class AiError extends Error {
@@ -271,6 +277,7 @@ interface CompletionOptions extends ArkTaskConfig {
   task?: AiTask
   signal?: AbortSignal
   responseSchema?: { name: string; schema: Record<string, unknown> }
+  audit?: { stage?: string; attempt?: number; retryOfCallId?: number }
 }
 
 interface ProviderMessage { content?: unknown }
@@ -355,10 +362,12 @@ async function requestCompletionRaw(
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const started = Date.now()
   let thinkingDowngraded = false
+  let providerAttempts = 0
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let response: Response
     try {
+      providerAttempts++
       response = await fetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
@@ -409,7 +418,8 @@ async function requestCompletionRaw(
       finishReason,
       usage: safeUsage(payload.usage),
       requestId: typeof payload.id === 'string' ? payload.id : response.headers.get('x-request-id'),
-      durationMs: Date.now() - started
+      durationMs: Date.now() - started,
+      providerAttempts
     }
   }
   throw new AiError('模型请求失败，请稍后重试', 502, 'provider_error')
@@ -444,9 +454,9 @@ interface AiRunLog {
   errorType?: string
 }
 
-function writeAiRun(entry: AiRunLog): void {
+function writeAiRun(entry: AiRunLog): number | null {
   try {
-    db.prepare(`INSERT INTO ai_runs (
+    const result = db.prepare(`INSERT INTO ai_runs (
       task, model, prompt_hash, request_id, duration_ms, finish_reason,
       prompt_tokens, completion_tokens, total_tokens, status, error_type, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -465,8 +475,109 @@ function writeAiRun(entry: AiRunLog): void {
     )
     // 单机工具保留最近 5000 次调用，避免日志无界增长。
     db.prepare('DELETE FROM ai_runs WHERE id NOT IN (SELECT id FROM ai_runs ORDER BY id DESC LIMIT 5000)').run()
+    return Number(result.lastInsertRowid)
   } catch (error) {
     console.error('写入 AI 调用日志失败:', (error as Error).message)
+    return null
+  }
+}
+
+const MAX_AUDIT_TEXT = 200_000
+
+function auditText(value: string): string {
+  return value.length <= MAX_AUDIT_TEXT ? value : `${value.slice(0, MAX_AUDIT_TEXT)}\n\n[日志截断：原内容超过 ${MAX_AUDIT_TEXT} 字符]`
+}
+
+function auditJson(value: unknown): string | null {
+  if (value === undefined) return null
+  try { return auditText(JSON.stringify(value)) } catch { return JSON.stringify({ unavailable: true }) }
+}
+
+function auditMessages(messages: ChatMessage[]): string {
+  return auditText(JSON.stringify(messages.map(message => ({
+    role: message.role,
+    content: Array.isArray(message.content)
+      ? message.content.map(part => part.type === 'text'
+        ? part
+        : {
+            type: 'image_url',
+            image_url: {
+              stored: false,
+              sha256: createHash('sha256').update(part.image_url.url).digest('hex'),
+              byte_length: part.image_url.url.length
+            }
+          })
+      : message.content
+  }))))
+}
+
+function writeAiCallRecord(entry: {
+  aiRunId: number | null
+  retryOfCallId?: number
+  task: AiTask
+  stage: string
+  attempt: number
+  model: string | null
+  promptHash: string
+  messages: ChatMessage[]
+  options: CompletionOptions
+  result?: AiCompletionResult
+  status: 'succeeded' | 'provider_failed'
+  error?: Error
+  durationMs: number
+}): number | null {
+  try {
+    const trace = currentTrace()
+    const resolved = resolveAiTask(entry.task, entry.options)
+    const requestOptions = {
+      output_mode: resolved?.outputMode ?? entry.options.outputMode ?? null,
+      temperature: resolved?.temperature ?? entry.options.temperature ?? null,
+      max_output_tokens: resolved?.maxOutputTokens ?? entry.options.maxOutputTokens ?? null,
+      timeout_ms: resolved?.timeoutMs ?? entry.options.timeoutMs ?? null,
+      thinking: resolved?.thinking ?? entry.options.thinking ?? null,
+      image_count: hasImages(entry.messages)
+    }
+    const result = db.prepare(`INSERT INTO ai_call_records (
+      ai_run_id,retry_of_call_id,task,stage,attempt,model,prompt_hash,provider_request_id,
+      request_messages_json,response_schema_json,request_options_json,raw_response,status,
+      error_type,error_message,duration_ms,finish_reason,prompt_tokens,completion_tokens,total_tokens,
+      trace_id,operation_run_id,operation_step_id,parent_entity_type,parent_entity_id,provider_attempts,created_at,finished_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      entry.aiRunId, entry.retryOfCallId ?? null, entry.task, entry.stage, entry.attempt,
+      entry.result?.model ?? entry.model, entry.promptHash, entry.result?.requestId ?? null,
+      auditMessages(entry.messages), auditJson(entry.options.responseSchema?.schema), auditJson(requestOptions),
+      entry.result ? auditText(entry.result.content) : null, entry.status,
+      entry.error instanceof AiError ? entry.error.kind : entry.error ? 'unexpected' : null,
+      entry.error ? auditText(entry.error.message) : null,
+      entry.result?.durationMs ?? entry.durationMs, entry.result?.finishReason ?? null,
+      entry.result?.usage?.promptTokens ?? null, entry.result?.usage?.completionTokens ?? null,
+      entry.result?.usage?.totalTokens ?? null, trace?.traceId ?? null, trace?.operationRunId ?? null,
+      trace?.operationStepId ?? null, null, null, entry.result?.providerAttempts ?? null, now(), now()
+    )
+    db.prepare('DELETE FROM ai_call_records WHERE id NOT IN (SELECT id FROM ai_call_records ORDER BY id DESC LIMIT 5000)').run()
+    return Number(result.lastInsertRowid)
+  } catch (error) {
+    console.error('写入 AI 调用审计记录失败:', (error as Error).message)
+    return null
+  }
+}
+
+function updateAiCallRecord(id: number | undefined, values: {
+  status: 'succeeded' | 'validation_failed'
+  parsed?: unknown
+  validated?: unknown
+  error?: Error
+}): void {
+  if (!id) return
+  try {
+    db.prepare(`UPDATE ai_call_records SET status=?,parsed_response_json=?,validated_response_json=?,
+      error_type=?,error_message=?,finished_at=? WHERE id=?`).run(
+      values.status, auditJson(values.parsed), auditJson(values.validated),
+      values.error ? 'validation' : null, values.error ? auditText(values.error.message) : null,
+      now(), id
+    )
+  } catch (error) {
+    console.error('更新 AI 调用审计记录失败:', (error as Error).message)
   }
 }
 
@@ -478,21 +589,31 @@ async function requestCompletion(
   const started = Date.now()
   const promptHash = hashMessages(messages)
   const model = resolveAiTask(task, options)?.model ?? options.model ?? null
+  const stage = options.audit?.stage ?? options.responseSchema?.name ?? 'chat'
+  const attempt = options.audit?.attempt ?? 1
   try {
     if (!isAiTaskEnabled(task)) {
       throw new AiError('该 AI 功能已停用，可在“AI 数据说明”中重新开启', 422, 'task_disabled')
     }
     const response = await requestCompletionRaw(messages, options)
-    writeAiRun({ task, model, promptHash, durationMs: Date.now() - started, status: 'succeeded', result: response })
-    return response
+    const aiRunId = writeAiRun({ task, model, promptHash, durationMs: Date.now() - started, status: 'succeeded', result: response })
+    const auditCallId = writeAiCallRecord({
+      aiRunId, retryOfCallId: options.audit?.retryOfCallId, task, stage, attempt, model, promptHash,
+      messages, options, result: response, status: 'succeeded', durationMs: Date.now() - started
+    })
+    return { ...response, auditCallId: auditCallId ?? undefined }
   } catch (error) {
-    writeAiRun({
+    const aiRunId = writeAiRun({
       task,
       model,
       promptHash,
       durationMs: Date.now() - started,
       status: 'failed',
       errorType: error instanceof AiError ? error.kind : 'unexpected'
+    })
+    writeAiCallRecord({
+      aiRunId, retryOfCallId: options.audit?.retryOfCallId, task, stage, attempt, model, promptHash,
+      messages, options, status: 'provider_failed', error: error as Error, durationMs: Date.now() - started
     })
     throw error
   }
@@ -512,7 +633,9 @@ export async function chat(messages: ChatMessage[], timeoutMs = 60_000, options?
 /** 从模型输出中提取 JSON（容忍 ```json 包裹和前后说明文字）。 */
 export function extractJson<T>(text: string): T {
   let value = text.trim()
-  const fence = value.match(/```(?:json)?\s*([\s\S]*?)```/)
+  // 只接受包裹整段回答的 JSON 围栏。课程正文可以合法包含 ```python 等代码块，
+  // 不能因为命中 JSON 字符串内部的 Markdown 而把代码误当成模型输出。
+  const fence = value.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
   if (fence) value = fence[1].trim()
   const objectStart = value.indexOf('{')
   const objectEnd = value.lastIndexOf('}')
@@ -534,16 +657,23 @@ export async function completeStructured<T>(
 ): Promise<{ value: T; completion: AiCompletionResult; attempts: number }> {
   let currentMessages = messages
   let lastError: Error | null = null
+  let retryOfCallId: number | undefined
   for (let attempt = 1; attempt <= 2; attempt++) {
     const completion = await completeChat(currentMessages, {
       ...options,
-      responseSchema: { name: options.schemaName, schema: options.schema }
+      responseSchema: { name: options.schemaName, schema: options.schema },
+      audit: { stage: options.schemaName, attempt, retryOfCallId }
     })
+    let parsed: unknown
     try {
-      const value = options.validate(extractJson<unknown>(completion.content))
+      parsed = extractJson<unknown>(completion.content)
+      const value = options.validate(parsed)
+      updateAiCallRecord(completion.auditCallId, { status: 'succeeded', parsed, validated: value })
       return { value, completion, attempts: attempt }
     } catch (error) {
       lastError = error as Error
+      updateAiCallRecord(completion.auditCallId, { status: 'validation_failed', parsed, error: lastError })
+      retryOfCallId = completion.auditCallId
       if (attempt === 2) break
       const repair = options.repairInstruction?.(lastError)
         ?? `上次输出未通过校验：${lastError.message.slice(0, 300)}。请仅修正格式和缺失字段，不补造事实，返回完整 JSON。`

@@ -25,6 +25,7 @@ class PrepAgentState(TypedDict, total=False):
     role_profile: dict[str, Any]
     retrieval_queries: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
+    code_evidence: list[dict[str, Any]]
     gap_analysis: dict[str, Any]
     draft_plan: dict[str, Any]
     critic_result: dict[str, Any]
@@ -86,9 +87,13 @@ def plan_issues(state: PrepAgentState, plan: dict[str, Any]) -> list[dict[str, A
         return [{"code": "VAGUE_ACTION", "item_index": None, "message": "计划没有任务"}]
     valid_refs = {"APP", "IV"}
     context = state.get("context", {})
+    if context.get("resume"):
+        valid_refs.add(str(context["resume"].get("ref", "RES")))
     valid_refs.update(str(item.get("ref")) for item in context.get("reviews", []))
     valid_refs.update(str(item.get("ref")) for item in context.get("mastery", []))
+    valid_refs.update(str(item.get("ref")) for item in context.get("projects", []))
     valid_refs.update(str(item.get("ref")) for item in state.get("evidence", []))
+    valid_refs.update(str(item.get("ref")) for item in state.get("code_evidence", []))
     existing = [
         "".join(ch.lower() for ch in str(item.get("content", "")) if ch.isalnum())
         for item in context.get("existing_checklist", [])
@@ -183,6 +188,10 @@ def build_graph(client: JobTracerClient):
             warnings.append("没有可用的历史复盘，无法确认个人过往薄弱点。")
         if not context.get("mastery"):
             warnings.append("没有未掌握或掌握模糊的知识条目。")
+        if context.get("resume"):
+            warnings.append("本次会使用关联简历中的项目表述；简历内容仅代表候选人自述，项目实现仍以代码证据为准。")
+        elif context.get("resume_status") and context.get("resume_status") != "completed":
+            warnings.append("当前投递关联的简历尚未成功提取文本，未纳入本次准备；可在投递表单中重新提取或上传 PDF/DOCX。")
         await client.update_run(
             state["run_id"],
             status="running",
@@ -200,16 +209,18 @@ def build_graph(client: JobTracerClient):
     @tracked("extract_role_profile", "提取岗位能力画像", "岗位能力画像已生成")
     async def extract_role_profile(state: PrepAgentState) -> NodeResult:
         context = state["context"]
-        response = await client.model("role_profile", {
+        response = await client.model(state["run_id"], "role_profile", {
             "application": context["application"],
             "interview": context["interview"],
+            "resume": context.get("resume"),
+            "project_archives": context.get("projects", []),
             "user_goal": state["user_goal"],
         })
         return {"role_profile": response["value"], "metrics": add_model_metrics(state, response)}
 
     @tracked("plan_retrieval_queries", "规划知识检索", "检索查询已生成")
     async def plan_retrieval_queries(state: PrepAgentState) -> NodeResult:
-        response = await client.model("query_plan", {
+        response = await client.model(state["run_id"], "query_plan", {
             "role_profile": state["role_profile"],
             "interview": state["context"]["interview"],
             "user_goal": state["user_goal"],
@@ -226,9 +237,89 @@ def build_graph(client: JobTracerClient):
             }]
         return {"retrieval_queries": queries, "metrics": add_model_metrics(state, response)}
 
+    @tracked("read_code_evidence", "按岗位重点读取项目代码", "项目代码证据已收集")
+    async def read_code_evidence(state: PrepAgentState) -> NodeResult:
+        project_ids: list[int] = []
+        for value in state["constraints"].get("project_ids", []):
+            try:
+                candidate = int(value)
+                if candidate > 0 and candidate not in project_ids:
+                    project_ids.append(candidate)
+            except (TypeError, ValueError):
+                continue
+        if not project_ids:
+            return {
+                "code_evidence": [],
+                "warnings": unique_warnings(state.get("warnings", []), ["未选择项目档案，已跳过代码证据调查。"]),
+            }
+        profile = state.get("role_profile", {})
+        signals = [str(item.get("text", "")).strip() for item in profile.get("project_signals", []) if isinstance(item, dict)]
+        skills = [str(item.get("text", "")).strip() for item in profile.get("must_have_skills", []) if isinstance(item, dict)]
+        application = state["context"]["application"]
+        role = str(application.get("position") or "目标岗位")
+        objective = f"为 {application.get('company') or '目标公司'} 的 {role} 面试准备：{state['user_goal']}"
+        questions = [
+            f"定位项目的启动入口和核心调用链，提取最适合向 {role} 面试官解释的真实实现。",
+            "找出项目的异常处理、边界校验、状态管理、可观测性或测试等可靠性设计；不存在时要明确说明。",
+            *[f"围绕岗位关注点“{item}”，在代码中查找对应实现或证明其不存在。" for item in signals[:2] if item],
+            *[f"围绕技能“{item}”，找出可用于项目表达的具体模块、调用关系或设计取舍。" for item in skills[:2] if item],
+        ][:6]
+        try:
+            payload = await client.read_code(state["run_id"], project_ids, objective, questions)
+        except JobTracerClientError as error:
+            return {
+                "code_evidence": [],
+                "warnings": unique_warnings(state.get("warnings", []), [f"项目代码调查未完成：{clipped_error(error)}"]),
+            }
+        project_names = {
+            int(item.get("item_id")): str(item.get("title", "项目"))
+            for item in state["context"].get("projects", [])
+            if item.get("item_id") is not None
+        }
+        collected: list[dict[str, Any]] = []
+        warnings = list(state.get("warnings", []))
+        for pack in payload.get("packs", []):
+            if not isinstance(pack, dict):
+                continue
+            project_id = int(pack.get("project_id") or 0)
+            project_name = project_names.get(project_id, f"项目 {project_id}")
+            if pack.get("status") != "completed":
+                error_message = str(pack.get("error_message") or "代码调查未完成").strip()
+                warnings.append(f"项目“{project_name}”代码调查未完成：{error_message}")
+                continue
+            for fact in pack.get("facts", []):
+                if not isinstance(fact, dict) or fact.get("kind") == "user_confirmation_required":
+                    continue
+                kind = str(fact.get("kind") or "")
+                statement = str(fact.get("statement", "")).strip()
+                if not statement:
+                    continue
+                refs = [str(value) for value in fact.get("evidence_refs", []) if str(value).strip()]
+                # 面试计划只能消费可以回到源码的结论。没有 C 证据的模型推断保留在
+                # 读代码会话中供人工查看，但不能伪装成可用于计划的项目证据。
+                if not refs:
+                    continue
+                caveat = str(fact.get("caveat") or "").strip()
+                is_inference = kind == "inference"
+                excerpt = ("工程推断（非代码事实）：" if is_inference else "代码事实：") + statement
+                if caveat:
+                    excerpt += "\n限制：" + caveat
+                if refs:
+                    excerpt += "\n代码证据：" + "、".join(refs)
+                collected.append({
+                    "ref": f"CE{len(collected) + 1}", "type": "project", "item_id": project_id,
+                    "title": f"{project_name} · {('推断：' if is_inference else '')}{statement[:120]}",
+                    "excerpt": excerpt,
+                    "score": 1.0 if kind == "code_fact" else 0.6,
+                    "code_session_id": pack.get("session_id"), "code_evidence_refs": refs,
+                })
+        if not collected:
+            warnings.append("项目代码调查没有形成可引用结论；请检查项目路径、模型配置或补充调查目标。")
+        return {"code_evidence": collected[:20], "warnings": unique_warnings(warnings)}
+
     @tracked("retrieve_evidence", "检索相关面经和知识", "相关证据已检索")
     async def retrieve_evidence(state: PrepAgentState) -> NodeResult:
-        evidence = await client.search(state["retrieval_queries"])
+        evidence = await client.search(state["run_id"], state["retrieval_queries"])
         warnings = list(state.get("warnings", []))
         if not evidence:
             warnings.append("知识库没有检索到相关资料，计划将只使用岗位和历史信息。")
@@ -237,10 +328,13 @@ def build_graph(client: JobTracerClient):
     @tracked("analyze_gaps", "分析能力差距", "能力差距已分析")
     async def analyze_gaps(state: PrepAgentState) -> NodeResult:
         context = state["context"]
-        response = await client.model("gap_analysis", {
+        response = await client.model(state["run_id"], "gap_analysis", {
             "role_profile": state["role_profile"],
             "historical_reviews": context.get("reviews", []),
             "mastery_items": context.get("mastery", []),
+            "resume": context.get("resume"),
+            "project_archives": context.get("projects", []),
+            "code_evidence": state.get("code_evidence", []),
             "retrieved_evidence": state.get("evidence", []),
             "user_goal": state["user_goal"],
         })
@@ -250,10 +344,13 @@ def build_graph(client: JobTracerClient):
 
     async def generate_plan(state: PrepAgentState, revision: bool) -> NodeResult:
         context = state["context"]
-        response = await client.model("plan", {
+        response = await client.model(state["run_id"], "plan", {
             "role_profile": state["role_profile"],
             "gap_analysis": state["gap_analysis"],
             "evidence": state.get("evidence", []),
+            "resume": context.get("resume"),
+            "project_archives": context.get("projects", []),
+            "code_evidence": state.get("code_evidence", []),
             "existing_checklist": context.get("existing_checklist", []),
             "interview": context["interview"],
             "user_goal": state["user_goal"],
@@ -273,15 +370,24 @@ def build_graph(client: JobTracerClient):
 
     @tracked("critic_plan", "检查计划依据和可执行性", "计划质量检查完成")
     async def critic_plan(state: PrepAgentState) -> NodeResult:
+        context = state["context"]
         deterministic = plan_issues(state, state["draft_plan"])
-        response = await client.model("critic", {
+        response = await client.model(state["run_id"], "critic", {
             "plan": state["draft_plan"],
             "role_profile": state["role_profile"],
-            "evidence_refs": [item.get("ref") for item in state.get("evidence", [])],
+            "evidence_refs": [
+                *[item.get("ref") for item in state.get("evidence", [])],
+                *[item.get("ref") for item in state.get("code_evidence", [])],
+                *( [context["resume"].get("ref", "RES")] if context.get("resume") else [] ),
+            ],
+            "code_evidence": state.get("code_evidence", []),
             "context_refs": [
                 "APP", "IV",
+                *( [context["resume"].get("ref", "RES")] if context.get("resume") else [] ),
                 *[item.get("ref") for item in state["context"].get("reviews", [])],
                 *[item.get("ref") for item in state["context"].get("mastery", [])],
+                *[item.get("ref") for item in state["context"].get("projects", [])],
+                *[item.get("ref") for item in state.get("code_evidence", [])],
             ],
             "deterministic_issues": deterministic,
         })
@@ -326,14 +432,17 @@ def build_graph(client: JobTracerClient):
             current_node="human_review",
             snapshot_hash=state["context_snapshot_hash"],
             plan=state["draft_plan"],
-            evidence=state.get("evidence", []),
+            evidence=[*state.get("evidence", []), *state.get("code_evidence", [])],
+            role_profile=state.get("role_profile"),
+            gap_analysis=state.get("gap_analysis"),
+            critic=state.get("critic_result"),
             warnings=state.get("warnings", []),
             metrics=metrics(state),
         )
         decision = interrupt({
             "run_id": state["run_id"],
             "plan": state["draft_plan"],
-            "evidence": state.get("evidence", []),
+            "evidence": [*state.get("evidence", []), *state.get("code_evidence", [])],
             "warnings": state.get("warnings", []),
             "critic": state.get("critic_result"),
             "revision_count": state.get("revision_count", 0),
@@ -397,6 +506,7 @@ def build_graph(client: JobTracerClient):
     builder.add_node("validate_request", validate_request)
     builder.add_node("load_context", load_context)
     builder.add_node("extract_role_profile", extract_role_profile)
+    builder.add_node("read_code_evidence", read_code_evidence)
     builder.add_node("plan_retrieval_queries", plan_retrieval_queries)
     builder.add_node("retrieve_evidence", retrieve_evidence)
     builder.add_node("analyze_gaps", analyze_gaps)
@@ -410,7 +520,8 @@ def build_graph(client: JobTracerClient):
     builder.add_edge(START, "validate_request")
     builder.add_edge("validate_request", "load_context")
     builder.add_edge("load_context", "extract_role_profile")
-    builder.add_edge("extract_role_profile", "plan_retrieval_queries")
+    builder.add_edge("extract_role_profile", "read_code_evidence")
+    builder.add_edge("read_code_evidence", "plan_retrieval_queries")
     builder.add_edge("plan_retrieval_queries", "retrieve_evidence")
     builder.add_edge("retrieve_evidence", "analyze_gaps")
     builder.add_edge("analyze_gaps", "draft_plan")

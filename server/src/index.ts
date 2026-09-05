@@ -24,6 +24,11 @@ import {
   configurePrepAgentRuntime, recoverPrepAgentRuntimeRun, stopPrepAgentService
 } from './prep-agent-runtime.js'
 import { recoverablePrepAgentRuns } from './prep-agent-service.js'
+import { observabilityRouter } from './routes/observability.js'
+import { projectsRouter } from './routes/projects.js'
+import { codeReadingRouter } from './routes/code-reading.js'
+import { recoverInterruptedCodeReadingSessions } from './code-reading-agent.js'
+import { logApp, newTraceId, runWithTrace, validTraceId } from './observability.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const configuredPort = Number(process.env.PORT)
@@ -36,8 +41,29 @@ const recoveredRecordings = recoverInterruptedRecordings()
 if (recoveredRecordings) console.log(`[recordings] 已恢复 ${recoveredRecordings} 个中断任务，可在页面点击重试`)
 app.use(express.json({ limit: '2mb' }))
 
+// 每个 HTTP 请求都有可回查的链路编号；内部 Python Agent 会透传该 header。
+app.use((req, res, next) => {
+  const traceId = validTraceId(req.get('x-trace-id')) ?? newTraceId('req')
+  const started = Date.now()
+  res.setHeader('X-Trace-Id', traceId)
+  res.on('finish', () => {
+    if (req.path.startsWith('/api/observability')) return
+    logApp({
+      level: res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info',
+      source: 'api', eventName: 'api.request_completed', traceId,
+      message: `${req.method} ${req.path} -> ${res.statusCode}`,
+      errorCode: res.statusCode >= 400 ? `HTTP_${res.statusCode}` : undefined,
+      context: { method: req.method, path: req.path, status_code: res.statusCode, duration_ms: Date.now() - started }
+    })
+  })
+  runWithTrace({ traceId }, next)
+})
+
 app.use('/api', statsRouter)
 app.use('/api', aiRouter)
+app.use('/api', observabilityRouter)
+app.use('/api', projectsRouter)
+app.use('/api', codeReadingRouter)
 app.use('/api', interviewsRouter)
 app.use('/api', eventsRouter)
 app.use('/api/resumes', resumesRouter)
@@ -54,8 +80,11 @@ app.use('/api', mailAutomationRouter)
 app.post('/api/jd-parse', jdParseHandler)
 
 // 统一错误处理（422/500 -> JSON）
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err)
+  logApp({ level: 'error', source: 'api', eventName: 'api.unhandled_error', message: err.message || '服务器错误',
+    traceId: validTraceId(req.get('x-trace-id')) ?? undefined, errorCode: 'UNHANDLED_ERROR', errorStack: err.stack,
+    context: { method: req.method, path: req.path } })
   res.status(500).json({ message: err.message || '服务器错误' })
 })
 
@@ -73,6 +102,8 @@ if (existsSync(publicDir)) {
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`job-tracer 已启动: http://localhost:${PORT}`)
   recoverInterruptedMailAnalyses()
+  const interruptedCodeSessions = recoverInterruptedCodeReadingSessions()
+  if (interruptedCodeSessions) console.log(`[code-reading] 已标记 ${interruptedCodeSessions} 个中断调查，可在项目档案中点击重试`)
   startMailAutomationScheduler()
   const recoverable = recoverablePrepAgentRuns()
   if (recoverable.length) {

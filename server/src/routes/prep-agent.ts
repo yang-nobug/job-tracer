@@ -6,7 +6,7 @@ import {
   PREP_MODEL_CONTRACTS, type PrepModelKind
 } from '../prep-agent-contracts.js'
 import {
-  PrepAgentError, buildPrepAgentContext, cancelPrepAgentRun, createPrepAgentRun,
+  PrepAgentError, buildPrepAgentContext, buildPrepAgentReferences, cancelPrepAgentRun, createPrepAgentRun,
   finishPrepAgentStep, getPrepAgentRunRow, insertPrepAgentStep, listPrepAgentRuns,
   parsePrepAgentConstraints, persistPrepAgentPlan, prepAgentInternalToken, recoverablePrepAgentRuns,
   searchPrepAgentEvidence, serializePrepAgentRun, updatePrepAgentRun, validatePrepAgentCreate,
@@ -15,6 +15,7 @@ import {
 import {
   cancelPrepAgentRuntimeRun, resumePrepAgentRun, startPrepAgentRun
 } from '../prep-agent-runtime.js'
+import { runWithTrace } from '../observability.js'
 
 export const prepAgentRouter = Router()
 
@@ -48,6 +49,10 @@ prepAgentRouter.post('/prep-agent/runs', asyncRoute(async (req, res) => {
 
 prepAgentRouter.get('/prep-agent/runs/:id', (req, res) => {
   res.json(serializePrepAgentRun(String(req.params.id)))
+})
+
+prepAgentRouter.get('/prep-agent/runs/:id/references', (req, res) => {
+  res.json(buildPrepAgentReferences(String(req.params.id)))
 })
 
 prepAgentRouter.get('/prep-agent/interviews/:id/runs', (req, res) => {
@@ -146,7 +151,9 @@ prepAgentRouter.get('/internal/prep-agent/runs/:id/input', (req, res) => {
     interview_id: run.interview_id,
     goal: run.goal,
     constraints: parsePrepAgentConstraints(run.constraints_json),
-    status: run.status
+    status: run.status,
+    trace_id: run.trace_id,
+    operation_run_id: run.operation_run_id
   })
 })
 
@@ -155,7 +162,11 @@ prepAgentRouter.get('/internal/prep-agent/runs/:id/context', (req, res) => {
 })
 
 prepAgentRouter.post('/internal/prep-agent/search', (req, res) => {
-  res.json({ evidence: searchPrepAgentEvidence(req.body?.queries) })
+  const runId = typeof req.body?.run_id === 'string' ? req.body.run_id : ''
+  const run = runId ? getPrepAgentRunRow(runId) : null
+  const execute = () => res.json({ evidence: searchPrepAgentEvidence(req.body?.queries) })
+  if (run?.trace_id) runWithTrace({ traceId: run.trace_id, operationRunId: run.operation_run_id ?? undefined }, execute)
+  else execute()
 })
 
 prepAgentRouter.post('/internal/prep-agent/model', asyncRoute(async (req, res) => {
@@ -166,7 +177,9 @@ prepAgentRouter.post('/internal/prep-agent/model', asyncRoute(async (req, res) =
   const serialized = JSON.stringify(input ?? {})
   if (serialized.length > 160_000) throw new PrepAgentError('模型节点输入过长')
   const validate = contract.validate as (value: unknown) => unknown
-  const result = await completeStructured([
+  const runId = typeof req.body?.run_id === 'string' ? req.body.run_id : ''
+  const run = runId ? getPrepAgentRunRow(runId) : null
+  const execute = () => completeStructured([
     {
       role: 'system',
       content: `${loadPrompt(contract.prompt)}\n\nJSON Schema:\n${JSON.stringify(contract.schema)}`
@@ -181,6 +194,9 @@ prepAgentRouter.post('/internal/prep-agent/model', asyncRoute(async (req, res) =
     schema: contract.schema,
     validate
   })
+  const result = run?.trace_id
+    ? await runWithTrace({ traceId: run.trace_id, operationRunId: run.operation_run_id ?? undefined }, execute)
+    : await execute()
   res.json({
     value: result.value,
     attempts: result.attempts,

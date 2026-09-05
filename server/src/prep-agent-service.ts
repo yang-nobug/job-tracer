@@ -3,7 +3,11 @@ import { db, getSetting, now, setSetting } from './db.js'
 import { readReviewFile } from './review-file.js'
 import { searchKnowledge, type RetrievedKnowledge } from './knowledge-retrieval.js'
 import { KNOWLEDGE_CATEGORIES } from './types.js'
-import { validatePrepPlan, type PrepPlan, type PrepPlanItem } from './prep-agent-contracts.js'
+import { createOperationRun, currentTrace, finishOperationRun, finishOperationStep, startOperationStep } from './observability.js'
+import {
+  validatePrepCritic, validatePrepGapAnalysis, validatePrepPlan, validatePrepRoleProfile,
+  type PrepCriticResult, type PrepGapAnalysis, type PrepPlan, type PrepPlanItem, type PrepRoleProfile
+} from './prep-agent-contracts.js'
 
 export const PREP_AGENT_STATUSES = [
   'pending', 'running', 'waiting_review', 'committing', 'completed', 'failed', 'cancelled'
@@ -13,6 +17,9 @@ export type PrepAgentStatus = (typeof PREP_AGENT_STATUSES)[number]
 
 export interface PrepAgentConstraints {
   focus: string[]
+  project_ids: number[]
+  /** 全局简历版本；与投递记录里的 resume_id 无关。 */
+  resume_id: number | null
 }
 
 interface PrepAgentRunRow {
@@ -29,6 +36,9 @@ interface PrepAgentRunRow {
   current_node: string | null
   plan_json: string | null
   evidence_json: string | null
+  role_profile_json: string | null
+  gap_analysis_json: string | null
+  critic_json: string | null
   warnings_json: string
   error_type: string | null
   error_message: string | null
@@ -39,11 +49,13 @@ interface PrepAgentRunRow {
   created_at: string
   updated_at: string
   finished_at: string | null
+  trace_id: string | null
+  operation_run_id: number | null
 }
 
 export interface PrepAgentEvidence {
   ref: string
-  type: 'knowledge_item' | 'review' | 'mastery' | 'application' | 'interview'
+  type: 'knowledge_item' | 'review' | 'mastery' | 'application' | 'interview' | 'project' | 'resume'
   title: string
   excerpt: string
   source_id?: number | null
@@ -52,6 +64,20 @@ export interface PrepAgentEvidence {
   company?: string
   position?: string
   round?: string
+  code_session_id?: string
+  code_evidence_refs?: string[]
+}
+
+export interface PrepAgentReference {
+  ref: string
+  type: 'application' | 'interview' | 'review' | 'mastery' | 'knowledge_item' | 'project' | 'resume'
+  title: string
+  subtitle: string
+  excerpt: string
+  source_id?: number | null
+  item_id?: number | null
+  code_session_id?: string | null
+  code_evidence_refs?: string[]
 }
 
 export interface PrepAgentContext {
@@ -75,8 +101,11 @@ export interface PrepAgentContext {
     done: number
   }
   existing_checklist: Array<{ id: number; content: string; done: number }>
+  resume: PrepAgentEvidence | null
+  resume_status: string | null
   reviews: PrepAgentEvidence[]
   mastery: PrepAgentEvidence[]
+  projects: PrepAgentEvidence[]
 }
 
 export class PrepAgentError extends Error {
@@ -114,7 +143,11 @@ export function parsePrepAgentConstraints(value: string | null): PrepAgentConstr
   const focus = Array.isArray(raw.focus)
     ? raw.focus.map(item => clipped(item, 40)).filter(Boolean).slice(0, 8)
     : []
-  return { focus }
+  const projectIds = Array.isArray(raw.project_ids)
+    ? [...new Set(raw.project_ids.map(Number).filter(id => Number.isInteger(id) && id > 0))].slice(0, 2)
+    : []
+  const resumeId = Number(raw.resume_id)
+  return { focus, project_ids: projectIds, resume_id: Number.isInteger(resumeId) && resumeId > 0 ? resumeId : null }
 }
 
 function normalizedTask(value: string): string {
@@ -154,16 +187,31 @@ export function validatePrepAgentCreate(body: unknown): {
     : []
   const requestId = clipped(raw.request_id, 100)
   if (!requestId || !/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) throw new PrepAgentError('request_id 非法')
-  return { applicationId, interviewId, goal, constraints: { focus }, requestId }
+  const projectIds = Array.isArray(rawConstraints.project_ids)
+    ? [...new Set(rawConstraints.project_ids.map(Number).filter(id => Number.isInteger(id) && id > 0))].slice(0, 2)
+    : []
+  if (projectIds.length) {
+    const found = db.prepare(`SELECT id FROM project_profiles WHERE id IN (${projectIds.map(() => '?').join(',')})`).all(...projectIds) as Array<{ id: number }>
+    if (found.length !== projectIds.length) throw new PrepAgentError('选择的项目档案不存在', 404, 'not_found')
+  }
+  const rawResumeId = Number(rawConstraints.resume_id)
+  const resumeId = Number.isInteger(rawResumeId) && rawResumeId > 0 ? rawResumeId : null
+  if (resumeId) {
+    const resume = db.prepare(`SELECT r.id FROM resumes r JOIN resume_texts t ON t.resume_id=r.id
+      WHERE r.id=? AND t.status='completed' AND length(COALESCE(t.text_content,''))>0`).get(resumeId)
+    if (!resume) throw new PrepAgentError('选择的简历不存在或尚未成功提取文本', 422, 'resume_unavailable')
+  }
+  return { applicationId, interviewId, goal, constraints: { focus, project_ids: projectIds, resume_id: resumeId }, requestId }
 }
 
 export function createPrepAgentRun(input: ReturnType<typeof validatePrepAgentCreate>): PrepAgentRunRow {
   const existingByRequest = db.prepare('SELECT * FROM prep_agent_runs WHERE request_id=?').get(input.requestId) as PrepAgentRunRow | undefined
   if (existingByRequest) return existingByRequest
-  const interview = db.prepare(`SELECT i.id, i.application_id
+  const interview = db.prepare(`SELECT i.id, i.application_id, i.done
     FROM interviews i JOIN applications a ON a.id=i.application_id
-    WHERE i.id=? AND a.id=?`).get(input.interviewId, input.applicationId) as { id: number; application_id: number } | undefined
+    WHERE i.id=? AND a.id=?`).get(input.interviewId, input.applicationId) as { id: number; application_id: number; done: number } | undefined
   if (!interview) throw new PrepAgentError('投递或面试不存在，或者二者不匹配', 404, 'not_found')
+  if (interview.done) throw new PrepAgentError('该面试已完成，不能再生成面试准备计划；请在复盘中记录收获后再进行补强。', 409, 'interview_completed')
   const active = db.prepare(`SELECT id FROM prep_agent_runs
     WHERE interview_id=? AND status IN ('pending','running','waiting_review','committing')
     ORDER BY created_at DESC LIMIT 1`).get(input.interviewId) as { id: string } | undefined
@@ -178,12 +226,15 @@ export function createPrepAgentRun(input: ReturnType<typeof validatePrepAgentCre
     goal: input.goal,
     constraints: input.constraints
   }))
+  const traceId = currentTrace()?.traceId
+  const operation = createOperationRun({ operationType: 'prep_agent_plan', traceId, parentEntityType: 'interview', parentEntityId: input.interviewId,
+    inputSummary: { application_id: input.applicationId, interview_id: input.interviewId, goal: input.goal, focus: input.constraints.focus, project_ids: input.constraints.project_ids, resume_id: input.constraints.resume_id } })
   db.prepare(`INSERT INTO prep_agent_runs (
     id, thread_id, request_id, application_id, interview_id, status, goal,
-    constraints_json, input_hash, warnings_json, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, '[]', ?, ?)`).run(
+    constraints_json, input_hash, warnings_json, trace_id, operation_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, '[]', ?, ?, ?, ?)`).run(
     id, threadId, input.requestId, input.applicationId, input.interviewId,
-    input.goal, constraintsJson, inputHash, timestamp, timestamp
+    input.goal, constraintsJson, inputHash, operation.traceId, operation.id, timestamp, timestamp
   )
   return getPrepAgentRunRow(id)
 }
@@ -219,6 +270,9 @@ export function serializePrepAgentRun(id: string, includeSteps = true): Record<s
     current_node: row.current_node,
     plan: json<PrepPlan | null>(row.plan_json, null),
     evidence: json<PrepAgentEvidence[]>(row.evidence_json, []),
+    role_profile: json<PrepRoleProfile | null>(row.role_profile_json, null),
+    gap_analysis: json<PrepGapAnalysis | null>(row.gap_analysis_json, null),
+    critic: json<PrepCriticResult | null>(row.critic_json, null),
     warnings: json<string[]>(row.warnings_json, []),
     error_type: row.error_type,
     error_message: row.error_message,
@@ -248,10 +302,10 @@ export function buildPrepAgentContext(runId: string): PrepAgentContext {
       a.jd_text, a.notes, a.updated_at AS application_updated_at,
       i.id AS interview_id, i.round, i.scheduled_at, i.location AS interview_location,
       i.done, i.created_at AS interview_created_at
-    FROM prep_agent_runs r
-    JOIN applications a ON a.id=r.application_id
+    FROM prep_agent_runs pr
+    JOIN applications a ON a.id=pr.application_id
     JOIN interviews i ON i.id=r.interview_id AND i.application_id=a.id
-    WHERE r.id=?`).get(runId) as Record<string, unknown> | undefined
+    WHERE pr.id=?`).get(runId) as Record<string, unknown> | undefined
   if (!row) throw new PrepAgentError('投递或面试已不存在', 404, 'not_found')
 
   const checklist = db.prepare(`SELECT id, content, done FROM checklist_items
@@ -298,6 +352,46 @@ export function buildPrepAgentContext(runId: string): PrepAgentContext {
     round: String(item.round ?? '')
   }))
 
+  // 简历是全局版本资料，由本次运行明确选择，不依赖投递记录是否曾绑定该文件。
+  // 它只能支持项目表达核对，不能替代源码证据或证明个人贡献。
+  const selectedResumeId = parsePrepAgentConstraints(run.constraints_json).resume_id
+  const resumeRow = selectedResumeId
+    ? db.prepare(`SELECT r.id,r.filename,r.note,t.text_content FROM resumes r JOIN resume_texts t ON t.resume_id=r.id
+      WHERE r.id=? AND t.status='completed'`).get(selectedResumeId) as { id: number; filename: string; note: string | null; text_content: string } | undefined
+    : undefined
+  const resumeText = clipped(resumeRow?.text_content, 16_000)
+  const resume: PrepAgentEvidence | null = resumeRow && resumeText
+    ? { ref: 'RES', type: 'resume', item_id: resumeRow.id, title: resumeRow.note ? `${resumeRow.filename} · ${resumeRow.note}` : resumeRow.filename, excerpt: resumeText }
+    : null
+
+  // 只提供用户主动填写的项目描述与确认事实，不把整仓代码或任意代码片段送入模型。
+  const selectedProjectIds = parsePrepAgentConstraints(run.constraints_json).project_ids
+  const projectRows = selectedProjectIds.length
+    ? db.prepare(`SELECT p.id,p.name,p.description FROM project_profiles p WHERE p.id IN (${selectedProjectIds.map(() => '?').join(',')}) ORDER BY p.updated_at DESC`).all(...selectedProjectIds) as Array<{ id: number; name: string; description: string }>
+    : []
+  const projectIds = projectRows.map(item => item.id)
+  const projectFacts = projectIds.length
+    ? db.prepare(`SELECT id,project_id,fact_type,title,content,evidence_chunk_ids_json FROM project_facts
+      WHERE project_id IN (${projectIds.map(() => '?').join(',')}) ORDER BY id DESC`).all(...projectIds) as Array<{ id: number; project_id: number; fact_type: string; title: string; content: string; evidence_chunk_ids_json: string }>
+    : []
+  const evidenceIds = [...new Set(projectFacts.flatMap(item => json<number[]>(item.evidence_chunk_ids_json, []).filter(Number.isInteger)))].slice(0, 120)
+  const codeLocations = new Map<number, string>()
+  if (evidenceIds.length) {
+    const rows = db.prepare(`SELECT c.id,f.relative_path,c.start_line,c.end_line FROM project_code_chunks c
+      JOIN project_code_files f ON f.id=c.file_id WHERE c.id IN (${evidenceIds.map(() => '?').join(',')})`).all(...evidenceIds) as Array<{ id: number; relative_path: string; start_line: number; end_line: number }>
+    for (const item of rows) codeLocations.set(item.id, `${item.relative_path}:${item.start_line}-${item.end_line}`)
+  }
+  const factsByProject = new Map<number, string[]>()
+  for (const fact of projectFacts) {
+    const locations = json<number[]>(fact.evidence_chunk_ids_json, []).map(id => codeLocations.get(id)).filter(Boolean)
+    const line = `${fact.fact_type}：${fact.title}\n${fact.content}${locations.length ? `\n代码依据（仅定位，不含源码）：${locations.join('；')}` : ''}`
+    const values = factsByProject.get(fact.project_id) ?? []; values.push(line); factsByProject.set(fact.project_id, values)
+  }
+  const projects: PrepAgentEvidence[] = projectRows.map((item, index) => ({
+    ref: `P${index + 1}`, type: 'project', item_id: item.id, title: item.name,
+    excerpt: clipped([item.description, ...(factsByProject.get(item.id) ?? [])].filter(Boolean).join('\n\n'), 6_000) || '尚未填写项目说明或已确认事实。'
+  }))
+
   const contextWithoutHash = {
     application: {
       ref: 'APP' as const,
@@ -318,8 +412,11 @@ export function buildPrepAgentContext(runId: string): PrepAgentContext {
       done: Number(row.done)
     },
     existing_checklist: checklist,
+    resume,
+    resume_status: selectedResumeId ? (resume ? 'completed' : 'unavailable') : null,
     reviews,
-    mastery
+    mastery,
+    projects
   }
   const snapshotSource = {
     ...contextWithoutHash,
@@ -327,6 +424,61 @@ export function buildPrepAgentContext(runId: string): PrepAgentContext {
     interview_created_at: row.interview_created_at
   }
   return { snapshot_hash: sha256(stableJson(snapshotSource)), ...contextWithoutHash }
+}
+
+/** 将计划中使用的短引用统一解析为可展示的本地证据，不向模型或前端暴露文件路径。 */
+export function buildPrepAgentReferences(runId: string): PrepAgentReference[] {
+  const context = buildPrepAgentContext(runId)
+  const references: PrepAgentReference[] = [
+    {
+      ref: 'APP', type: 'application', title: `${context.application.company} · ${context.application.position}`,
+      subtitle: `投递状态：${context.application.status}${context.application.location ? ` · ${context.application.location}` : ''}`,
+      excerpt: [context.application.jd_text && `JD 正文\n${context.application.jd_text}`, context.application.notes && `投递备注\n${context.application.notes}`]
+        .filter(Boolean).join('\n\n') || '当前投递未填写 JD 或备注。'
+    },
+    {
+      ref: 'IV', type: 'interview', title: context.interview.round,
+      subtitle: `面试时间：${context.interview.scheduled_at}${context.interview.location ? ` · ${context.interview.location}` : ''}`,
+      excerpt: context.interview.done ? '该面试已标记完成。' : '当前待准备的面试。'
+    },
+    ...(context.resume ? [{
+      ref: context.resume.ref, type: 'resume' as const, title: context.resume.title,
+      subtitle: '当前投递关联的简历文本：用于核对项目表述，不等同于源码或个人贡献证明', excerpt: context.resume.excerpt, item_id: context.resume.item_id
+    }] : []),
+    ...context.reviews.map(item => ({
+      ref: item.ref, type: 'review' as const, title: item.title,
+      subtitle: '历史面试复盘', excerpt: item.excerpt || '复盘原文不可用。'
+    })),
+    ...context.mastery.map(item => ({
+      ref: item.ref, type: 'mastery' as const, title: item.title,
+      subtitle: `知识掌握度：待补强${item.company ? ` · ${item.company}` : ''}`,
+      excerpt: item.excerpt || '该知识条目尚未填写答案。', source_id: item.source_id ?? null, item_id: item.item_id
+    })),
+    ...context.projects.map(item => ({
+      ref: item.ref, type: 'project' as const, title: item.title,
+      subtitle: '项目档案：用户填写的说明和已确认事实', excerpt: item.excerpt, item_id: item.item_id
+    }))
+  ]
+  const run = getPrepAgentRunRow(runId)
+  for (const item of json<PrepAgentEvidence[]>(run.evidence_json, [])) {
+    if (references.some(reference => reference.ref === item.ref)) continue
+    const codeSessionId = typeof item.code_session_id === 'string' && /^[a-f0-9-]{36}$/i.test(item.code_session_id) ? item.code_session_id : null
+    const codeEvidenceRefs = Array.isArray(item.code_evidence_refs) ? item.code_evidence_refs.filter(ref => typeof ref === 'string').slice(0, 12) : []
+    const codeEvidence = codeSessionId && codeEvidenceRefs.length
+      ? db.prepare(`SELECT evidence_ref,relative_path,start_line,end_line,excerpt FROM code_reading_evidence
+        WHERE session_id=? AND evidence_ref IN (${codeEvidenceRefs.map(() => '?').join(',')}) ORDER BY id`).all(codeSessionId, ...codeEvidenceRefs) as Array<{ evidence_ref: string; relative_path: string; start_line: number; end_line: number; excerpt: string }>
+      : []
+    const codeExcerpt = codeEvidence.length
+      ? `${item.excerpt || ''}\n\n代码原始证据：\n${codeEvidence.map(entry => `[${entry.evidence_ref}] ${entry.relative_path}:${entry.start_line}-${entry.end_line}\n${entry.excerpt}`).join('\n\n')}`.slice(0, 12_000)
+      : item.excerpt || '证据原文不可用。'
+    references.push({
+      ref: item.ref, type: item.type === 'review' ? 'review' : item.type === 'mastery' ? 'mastery' : item.type === 'knowledge_item' ? 'knowledge_item' : item.type === 'application' ? 'application' : item.type === 'project' ? 'project' : item.type === 'resume' ? 'resume' : 'interview',
+      title: item.title, subtitle: codeSessionId ? '读代码 Agent 调查结果' : item.type === 'knowledge_item' ? '知识库检索结果' : '计划检索证据',
+      excerpt: codeExcerpt, source_id: item.source_id ?? null, item_id: item.item_id,
+      code_session_id: codeSessionId, code_evidence_refs: codeEvidenceRefs
+    })
+  }
+  return references
 }
 
 export function searchPrepAgentEvidence(queries: unknown): PrepAgentEvidence[] {
@@ -364,17 +516,20 @@ export function searchPrepAgentEvidence(queries: unknown): PrepAgentEvidence[] {
 }
 
 export function insertPrepAgentStep(runId: string, body: unknown): number {
-  getPrepAgentRunRow(runId)
+  const run = getPrepAgentRunRow(runId)
   const raw = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {}
   const node = clipped(raw.node, 80)
   if (!node) throw new PrepAgentError('node 不能为空')
   const attempt = Number(raw.attempt ?? 1)
   if (!Number.isInteger(attempt) || attempt < 1 || attempt > 20) throw new PrepAgentError('attempt 非法')
+  const operationStepId = run.operation_run_id
+    ? startOperationStep({ operationRunId: run.operation_run_id, stepName: node, sequence: attempt, inputSummary: { summary: clipped(raw.summary, 500) } })
+    : null
   const result = db.prepare(`INSERT INTO prep_agent_steps
-    (run_id, node, attempt, status, summary, input_hash, created_at)
-    VALUES (?, ?, ?, 'running', ?, ?, ?)`).run(
-      runId, node, attempt, clipped(raw.summary, 500) || null,
-      clipped(raw.input_hash, 64) || null, now()
+    (run_id, node, attempt, status, summary, input_hash, operation_step_id, created_at)
+    VALUES (?, ?, ?, 'running', ?, ?, ?, ?)`).run(
+    runId, node, attempt, clipped(raw.summary, 500) || null,
+    clipped(raw.input_hash, 64) || null, operationStepId, now()
     )
   db.prepare(`UPDATE prep_agent_runs SET status='running', current_node=?, updated_at=?
     WHERE id=? AND status NOT IN ('completed','cancelled')`).run(node, now(), runId)
@@ -394,6 +549,15 @@ export function finishPrepAgentStep(runId: string, stepId: number, body: unknown
     now(), stepId, runId
   )
   if (!result.changes) throw new PrepAgentError('步骤不存在或已结束', 409, 'step_conflict')
+  const operationStep = db.prepare('SELECT operation_step_id FROM prep_agent_steps WHERE id=?').get(stepId) as { operation_step_id: number | null } | undefined
+  if (operationStep?.operation_step_id) {
+    finishOperationStep(operationStep.operation_step_id, {
+      status: status === 'completed' ? 'succeeded' : 'failed',
+      outputSummary: status === 'completed' ? { summary: clipped(raw.summary, 500) } : undefined,
+      errorCode: status === 'failed' ? clipped(raw.error_type, 80) || 'PREP_AGENT_STEP_FAILED' : undefined,
+      errorMessage: status === 'failed' ? clipped(raw.summary, 500) : undefined
+    })
+  }
 }
 
 export function updatePrepAgentRun(runId: string, body: unknown): void {
@@ -417,9 +581,18 @@ export function updatePrepAgentRun(runId: string, body: unknown): void {
   const evidence = raw.evidence === undefined
     ? current.evidence_json
     : JSON.stringify(Array.isArray(raw.evidence) ? raw.evidence.slice(0, 30) : [])
+  const roleProfile = raw.role_profile === undefined
+    ? current.role_profile_json
+    : JSON.stringify(validatePrepRoleProfile(raw.role_profile))
+  const gapAnalysis = raw.gap_analysis === undefined
+    ? current.gap_analysis_json
+    : JSON.stringify(validatePrepGapAnalysis(raw.gap_analysis))
+  const critic = raw.critic === undefined
+    ? current.critic_json
+    : JSON.stringify(validatePrepCritic(raw.critic))
   const terminal = ['completed', 'failed', 'cancelled'].includes(status)
   db.prepare(`UPDATE prep_agent_runs SET status=?, snapshot_hash=?, current_node=?, plan_json=?,
-      evidence_json=?, warnings_json=?, error_type=?, error_message=?, model_calls=?,
+      evidence_json=?, role_profile_json=?, gap_analysis_json=?, critic_json=?, warnings_json=?, error_type=?, error_message=?, model_calls=?,
       prompt_tokens=?, completion_tokens=?, total_tokens=?, updated_at=?, finished_at=?
     WHERE id=?`).run(
       status,
@@ -427,6 +600,9 @@ export function updatePrepAgentRun(runId: string, body: unknown): void {
       raw.current_node === undefined ? current.current_node : clipped(raw.current_node, 80) || null,
       plan,
       evidence,
+      roleProfile,
+      gapAnalysis,
+      critic,
       JSON.stringify(warnings),
       raw.error_type === undefined ? current.error_type : clipped(raw.error_type, 80) || null,
       raw.error_message === undefined ? current.error_message : clipped(raw.error_message, 500) || null,
@@ -436,6 +612,14 @@ export function updatePrepAgentRun(runId: string, body: unknown): void {
       metric('total_tokens', current.total_tokens),
       now(), terminal ? now() : null, runId
     )
+  if (terminal && current.operation_run_id) {
+    const errorCode = raw.error_type === undefined ? current.error_type ?? undefined : clipped(raw.error_type, 80) || undefined
+    const errorMessage = raw.error_message === undefined ? current.error_message ?? undefined : clipped(raw.error_message, 500) || undefined
+    finishOperationRun(current.operation_run_id, {
+      status: status === 'completed' ? 'succeeded' : status === 'cancelled' ? 'cancelled' : 'failed',
+      resultSummary: { prep_agent_run_id: runId, model_calls: metric('model_calls', current.model_calls) }, errorCode, errorMessage
+    })
+  }
 }
 
 function validatePlanAgainstRun(run: PrepAgentRunRow, rawPlan: unknown): { plan: PrepPlan; context: PrepAgentContext } {
@@ -514,6 +698,11 @@ export function persistPrepAgentPlan(runId: string, rawPlan: unknown): { checkli
       )
     return checklistIds
   })()
+  if (run.operation_run_id) {
+    finishOperationRun(run.operation_run_id, {
+      status: 'succeeded', resultSummary: { prep_agent_run_id: runId, checklist_count: ids.length, model_calls: run.model_calls }
+    })
+  }
   return { checklistIds: ids, plan }
 }
 
@@ -523,6 +712,9 @@ export function cancelPrepAgentRun(runId: string): void {
   if (run.status === 'cancelled') return
   db.prepare(`UPDATE prep_agent_runs SET status='cancelled', current_node='cancelled',
     updated_at=?, finished_at=? WHERE id=?`).run(now(), now(), runId)
+  if (run.operation_run_id) {
+    finishOperationRun(run.operation_run_id, { status: 'cancelled', resultSummary: { prep_agent_run_id: runId } })
+  }
 }
 
 export function recoverablePrepAgentRuns(): Array<{ id: string; thread_id: string }> {

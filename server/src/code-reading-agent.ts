@@ -5,6 +5,7 @@ import { completeStructured, isAiTaskEnabled, resolveAiTask } from './ai.js'
 import { db, now } from './db.js'
 import { createOperationRun, finishOperationRun, finishOperationStep, logApp, runWithTrace, startOperationStep } from './observability.js'
 import { loadPrompt } from './prompt-loader.js'
+import { hasLikelySecretContent, isIgnoredSourceSegment, isProtectedSourceName, pathIsWithinScopes } from './source-access-policy.js'
 
 const MAX_TOOL_CALLS = 12
 const INTERNAL_TOOL_CALLS = 4
@@ -14,10 +15,6 @@ const MAX_TREE_ITEMS = 240
 const MAX_SEARCH_FILES = 500
 const MAX_SEARCH_HITS = 12
 const MAX_FILE_SIZE = 1_000_000
-const IGNORED_DIRS = new Set(['.git', '.svn', '.hg', 'node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.cache', 'vendor', 'target', '__pycache__', '.venv', 'venv'])
-// 配置文件在个人项目中经常直接承载 API Key、数据库连接串或云凭据。代码调查只需读取
-// 可公开的源码，不应为了“理解架构”把这些内容提供给模型。
-const SENSITIVE_NAMES = /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|id_rsa(?:\.pub)?|.*\.(?:pem|key|p12|pfx|tfvars)|credentials(?:\..*)?|secrets?(?:\..*)?|config(?:\..*)?\.json)$/i
 const TEXT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.vue', '.java', '.go', '.rs', '.sql', '.md', '.mdx', '.json', '.yml', '.yaml', '.html', '.css', '.scss', '.sh'])
 
 type OutputMode = 'explain' | 'architecture' | 'interview_story'
@@ -37,17 +34,33 @@ function toolBudget(value: unknown): number { return Math.max(1, Math.min(MAX_TO
 function isTextFile(filename: string): boolean { return TEXT_EXTENSIONS.has(path.extname(filename).toLowerCase()) || ['README', 'Dockerfile', 'Makefile'].includes(path.basename(filename)) }
 function isBinary(value: Buffer): boolean { return value.subarray(0, 8192).includes(0) }
 
-function projectRoot(projectId: number): { root: string; name: string } {
-  const row = db.prepare('SELECT root_realpath,name FROM project_profiles WHERE id=?').get(projectId) as { root_realpath: string; name: string } | undefined
-  if (!row) throw new CodeReadingError('项目档案不存在', 'PROJECT_NOT_FOUND', 404)
-  try {
-    const root = realpathSync(row.root_realpath)
-    if (!statSync(root).isDirectory()) throw new Error('not directory')
-    return { root, name: row.name }
-  } catch { throw new CodeReadingError('项目根目录当前不可读取', 'PROJECT_ROOT_UNAVAILABLE', 409) }
+function configuredScopes(root: string, raw: unknown): string[] {
+  let parsed: unknown
+  try { parsed = JSON.parse(typeof raw === 'string' ? raw : '') } catch { parsed = null }
+  if (!Array.isArray(parsed) || !parsed.length) throw new CodeReadingError('项目未配置可读取的扫描范围，请在项目档案中重新保存扫描范围', 'PROJECT_SCOPE_UNAVAILABLE', 409)
+  const scopes = parsed.map(item => clean(item, 1_000)).filter(Boolean).map(scope => {
+    if (path.isAbsolute(scope)) throw new CodeReadingError('项目扫描范围无效，请在项目档案中重新保存', 'PROJECT_SCOPE_UNAVAILABLE', 409)
+    const resolved = path.resolve(root, scope)
+    const relative = path.relative(root, resolved)
+    if ((relative && relative.startsWith('..')) || path.isAbsolute(relative)) throw new CodeReadingError('项目扫描范围超出项目根目录', 'PROJECT_SCOPE_UNAVAILABLE', 409)
+    return relative.replace(/\\/g, '/') || '.'
+  })
+  return [...new Set(scopes)]
 }
 
-function relativeSafe(root: string, value: unknown, required = false): { absolute: string; relative: string } {
+function projectRoot(projectId: number): { root: string; name: string; scopes: string[] } {
+  const row = db.prepare('SELECT root_realpath,name,scan_scopes_json FROM project_profiles WHERE id=?').get(projectId) as { root_realpath: string; name: string; scan_scopes_json: string } | undefined
+  if (!row) throw new CodeReadingError('项目档案不存在', 'PROJECT_NOT_FOUND', 404)
+  let root: string
+  try {
+    root = realpathSync(row.root_realpath)
+    if (!statSync(root).isDirectory()) throw new Error('not directory')
+  } catch { throw new CodeReadingError('项目根目录当前不可读取', 'PROJECT_ROOT_UNAVAILABLE', 409) }
+  return { root, name: row.name, scopes: configuredScopes(root, row.scan_scopes_json) }
+}
+
+function relativeSafe(project: { root: string; scopes: string[] }, value: unknown, required = false): { absolute: string; relative: string } {
+  const { root } = project
   const requested = clean(value, 1000) || '.'
   if (required && requested === '.') throw new CodeReadingError('请指定项目内文件路径', 'PATH_REQUIRED')
   if (path.isAbsolute(requested)) throw new CodeReadingError('只能访问项目内的相对路径', 'PATH_OUTSIDE_PROJECT')
@@ -56,22 +69,26 @@ function relativeSafe(root: string, value: unknown, required = false): { absolut
   try { real = realpathSync(resolved) } catch { throw new CodeReadingError(`路径不存在：${requested}`, 'PATH_NOT_FOUND') }
   const relative = path.relative(root, real)
   if ((relative && relative.startsWith('..')) || path.isAbsolute(relative)) throw new CodeReadingError('路径不在项目根目录内', 'PATH_OUTSIDE_PROJECT')
-  const segments = relative.split(/[\\/]/).filter(Boolean)
-  if (segments.some(segment => IGNORED_DIRS.has(segment)) || SENSITIVE_NAMES.test(path.basename(real))) {
+  const normalized = relative.replace(/\\/g, '/') || '.'
+  const segments = normalized.split('/').filter(Boolean)
+  if (!pathIsWithinScopes(normalized, project.scopes)) {
+    throw new CodeReadingError(`该路径不在已配置的扫描范围内：${project.scopes.join('、')}`, 'PATH_OUTSIDE_SCAN_SCOPE')
+  }
+  if (segments.some(isIgnoredSourceSegment) || isProtectedSourceName(path.basename(real))) {
     throw new CodeReadingError('该路径属于受保护范围，不能读取', 'PATH_PROTECTED')
   }
-  return { absolute: real, relative: relative.replace(/\\/g, '/') || '.' }
+  return { absolute: real, relative: normalized }
 }
 
-function tree(root: string, rawPath: unknown, rawDepth: unknown): { items: Array<{ path: string; type: 'file' | 'directory' }>; truncated: boolean } {
-  const target = relativeSafe(root, rawPath); const depth = Math.max(0, Math.min(4, Number(rawDepth) || 2)); const items: Array<{ path: string; type: 'file' | 'directory' }> = []; let truncated = false
+function tree(project: { root: string; scopes: string[] }, rawPath: unknown, rawDepth: unknown): { items: Array<{ path: string; type: 'file' | 'directory' }>; truncated: boolean } {
+  const { root } = project; const target = relativeSafe(project, rawPath); const depth = Math.max(0, Math.min(4, Number(rawDepth) || 2)); const items: Array<{ path: string; type: 'file' | 'directory' }> = []; let truncated = false
   const walk = (directory: string, level: number): void => {
     if (truncated || level > depth) return
     let entries
     try { entries = readdirSync(directory, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       if (items.length >= MAX_TREE_ITEMS) { truncated = true; return }
-      if (entry.isSymbolicLink() || IGNORED_DIRS.has(entry.name) || SENSITIVE_NAMES.test(entry.name)) continue
+      if (entry.isSymbolicLink() || isIgnoredSourceSegment(entry.name) || isProtectedSourceName(entry.name)) continue
       const next = path.join(directory, entry.name); const rel = path.relative(root, next).replace(/\\/g, '/')
       if (entry.isDirectory()) { items.push({ path: `${rel}/`, type: 'directory' }); walk(next, level + 1) }
       else if (entry.isFile() && isTextFile(next)) items.push({ path: rel, type: 'file' })
@@ -80,16 +97,16 @@ function tree(root: string, rawPath: unknown, rawDepth: unknown): { items: Array
   walk(target.absolute, 0); return { items, truncated }
 }
 
-function listFiles(root: string, rawQuery: unknown, rawScope: unknown): { files: string[]; truncated: boolean } {
-  const query = clean(rawQuery, 200).toLowerCase(); if (!query) throw new CodeReadingError('find_files 需要 query', 'TOOL_ARGUMENT_INVALID')
-  const scope = relativeSafe(root, rawScope); const files: string[] = []; let truncated = false
+function listFiles(project: { root: string; scopes: string[] }, rawQuery: unknown, rawScope: unknown): { files: string[]; truncated: boolean } {
+  const { root } = project; const query = clean(rawQuery, 200).toLowerCase(); if (!query) throw new CodeReadingError('find_files 需要 query', 'TOOL_ARGUMENT_INVALID')
+  const scope = relativeSafe(project, rawScope); const files: string[] = []; let truncated = false
   const walk = (directory: string): void => {
     if (truncated) return
     let entries
     try { entries = readdirSync(directory, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       if (files.length >= 100) { truncated = true; return }
-      if (entry.isSymbolicLink() || IGNORED_DIRS.has(entry.name) || SENSITIVE_NAMES.test(entry.name)) continue
+      if (entry.isSymbolicLink() || isIgnoredSourceSegment(entry.name) || isProtectedSourceName(entry.name)) continue
       const target = path.join(directory, entry.name)
       if (entry.isDirectory()) walk(target)
       else if (entry.isFile() && isTextFile(target)) {
@@ -101,16 +118,16 @@ function listFiles(root: string, rawQuery: unknown, rawScope: unknown): { files:
   walk(scope.absolute); return { files, truncated }
 }
 
-function search(root: string, rawQuery: unknown, rawScope: unknown): { hits: Array<{ relative_path: string; start_line: number; end_line: number; excerpt: string }>; scanned_files: number; truncated: boolean } {
-  const query = clean(rawQuery, 300); if (query.length < 2) throw new CodeReadingError('search_code 的 query 至少需要 2 个字符', 'TOOL_ARGUMENT_INVALID')
-  const scope = relativeSafe(root, rawScope); const candidates: string[] = []; let stopped = false
+function search(project: { root: string; scopes: string[] }, rawQuery: unknown, rawScope: unknown): { hits: Array<{ relative_path: string; start_line: number; end_line: number; excerpt: string }>; scanned_files: number; truncated: boolean } {
+  const { root } = project; const query = clean(rawQuery, 300); if (query.length < 2) throw new CodeReadingError('search_code 的 query 至少需要 2 个字符', 'TOOL_ARGUMENT_INVALID')
+  const scope = relativeSafe(project, rawScope); const candidates: string[] = []; let stopped = false
   const walk = (directory: string): void => {
     if (stopped) return
     let entries
     try { entries = readdirSync(directory, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       if (candidates.length >= MAX_SEARCH_FILES) { stopped = true; return }
-      if (entry.isSymbolicLink() || IGNORED_DIRS.has(entry.name) || SENSITIVE_NAMES.test(entry.name)) continue
+      if (entry.isSymbolicLink() || isIgnoredSourceSegment(entry.name) || isProtectedSourceName(entry.name)) continue
       const target = path.join(directory, entry.name)
       if (entry.isDirectory()) walk(target)
       else if (entry.isFile() && isTextFile(target)) {
@@ -124,7 +141,7 @@ function search(root: string, rawQuery: unknown, rawScope: unknown): { hits: Arr
     if (hits.length >= MAX_SEARCH_HITS) break
     let content: Buffer
     try { content = readFileSync(filename) } catch { continue }
-    if (isBinary(content)) continue
+    if (isBinary(content) || hasLikelySecretContent(content)) continue
     const lines = content.toString('utf8').split(/\r?\n/)
     for (let index = 0; index < lines.length && hits.length < MAX_SEARCH_HITS; index += 1) {
       if (!lines[index].toLowerCase().includes(query.toLowerCase())) continue
@@ -135,11 +152,12 @@ function search(root: string, rawQuery: unknown, rawScope: unknown): { hits: Arr
   return { hits, scanned_files: candidates.length, truncated: stopped || hits.length >= MAX_SEARCH_HITS }
 }
 
-function readRange(root: string, rawPath: unknown, rawStart: unknown, rawEnd: unknown): { relative_path: string; start_line: number; end_line: number; excerpt: string } {
-  const file = relativeSafe(root, rawPath, true)
+function readRange(project: { root: string; scopes: string[] }, rawPath: unknown, rawStart: unknown, rawEnd: unknown): { relative_path: string; start_line: number; end_line: number; excerpt: string } {
+  const file = relativeSafe(project, rawPath, true)
   let stat; try { stat = statSync(file.absolute) } catch { throw new CodeReadingError('文件不可读取', 'FILE_UNREADABLE') }
   if (!stat.isFile() || stat.size > MAX_FILE_SIZE || !isTextFile(file.absolute)) throw new CodeReadingError('该文件不在允许的文本读取范围内', 'FILE_NOT_ALLOWED')
   const buffer = readFileSync(file.absolute); if (isBinary(buffer)) throw new CodeReadingError('不能读取二进制文件', 'FILE_BINARY')
+  if (hasLikelySecretContent(buffer)) throw new CodeReadingError('该文件疑似包含明文密钥或凭据，不能发送给模型', 'FILE_POTENTIAL_SECRET')
   const lines = buffer.toString('utf8').split(/\r?\n/); const start = Math.max(1, Math.floor(Number(rawStart) || 1)); const requestedEnd = Math.floor(Number(rawEnd) || start + 119); const end = Math.min(lines.length, Math.max(start, Math.min(start + MAX_READ_LINES - 1, requestedEnd)))
   return { relative_path: file.relative, start_line: start, end_line: end, excerpt: lines.slice(start - 1, end).join('\n').slice(0, 16_000) }
 }
@@ -183,14 +201,14 @@ function addEvidence(sessionId: string, snippets: Array<{ relative_path: string;
   })
 }
 
-function executeTool(sessionId: string, root: string, tool: { name: ToolName; arguments: Record<string, unknown> }) {
-  if (tool.name === 'list_tree') return tree(root, tool.arguments.path, tool.arguments.depth)
-  if (tool.name === 'find_files') return listFiles(root, tool.arguments.query, tool.arguments.path)
+function executeTool(sessionId: string, project: { root: string; scopes: string[] }, tool: { name: ToolName; arguments: Record<string, unknown> }) {
+  if (tool.name === 'list_tree') return tree(project, tool.arguments.path, tool.arguments.depth)
+  if (tool.name === 'find_files') return listFiles(project, tool.arguments.query, tool.arguments.path)
   if (tool.name === 'read_range') {
-    const value = readRange(root, tool.arguments.path, tool.arguments.start_line, tool.arguments.end_line)
+    const value = readRange(project, tool.arguments.path, tool.arguments.start_line, tool.arguments.end_line)
     return { ...value, evidence: addEvidence(sessionId, [value]) }
   }
-  const value = search(root, tool.arguments.query, tool.arguments.path)
+  const value = search(project, tool.arguments.query, tool.arguments.path)
   return { ...value, evidence: addEvidence(sessionId, value.hits) }
 }
 
@@ -252,7 +270,18 @@ export function retryCodeReadingSession(sessionId: string): Record<string, unkno
 
 export async function runCodeReadingSession(sessionId: string): Promise<void> {
   const row = sessionRow(sessionId); if (row.status !== 'queued') return
-  const projectId = Number(row.project_id); const project = projectRoot(projectId); const operationRunId = Number(row.operation_run_id); const traceId = String(row.trace_id)
+  const projectId = Number(row.project_id); const operationRunId = Number(row.operation_run_id); const traceId = String(row.trace_id)
+  let project: { root: string; name: string; scopes: string[] }
+  try {
+    project = projectRoot(projectId)
+  } catch (error) {
+    const message = (error as Error).message || '项目读取范围不可用'
+    const code = error instanceof CodeReadingError ? error.code : 'PROJECT_ROOT_UNAVAILABLE'
+    db.prepare("UPDATE code_reading_sessions SET status='failed',error_code=?,error_message=?,updated_at=?,finished_at=? WHERE id=?").run(code, message.slice(0, 2_000), now(), now(), sessionId)
+    finishOperationRun(operationRunId, { status: 'failed', errorCode: code, errorMessage: message })
+    logApp({ level: 'error', source: 'code_reading_agent', eventName: 'code_agent.failed_before_start', message, errorCode: code, entityType: 'code_reading_session', entityId: sessionId })
+    return
+  }
   const maxToolCalls = toolBudget(row.max_tool_calls)
   await runWithTrace({ traceId, operationRunId }, async () => {
     db.prepare("UPDATE code_reading_sessions SET status='running',updated_at=? WHERE id=?").run(now(), sessionId)
@@ -262,7 +291,7 @@ export async function runCodeReadingSession(sessionId: string): Promise<void> {
         const current = sessionRow(sessionId); if (current.status === 'cancelled') return
         const evidence = db.prepare('SELECT evidence_ref,relative_path,start_line,end_line FROM code_reading_evidence WHERE session_id=? ORDER BY id').all(sessionId)
         const prompt = {
-          project: { name: project.name }, task: String(row.question), output_mode: String(row.output_mode),
+          project: { name: project.name, allowed_scopes: project.scopes }, task: String(row.question), output_mode: String(row.output_mode),
           budget: { tool_calls_remaining: maxToolCalls - Number(current.tool_calls_used), bytes_remaining: MAX_BYTES_READ - Number(current.bytes_read) },
           evidence_index: evidence,
           recent_observations: history.slice(-5),
@@ -305,7 +334,7 @@ export async function runCodeReadingSession(sessionId: string): Promise<void> {
         if (!decision.tool || Number(current.tool_calls_used) >= maxToolCalls) throw new CodeReadingError('调查预算已耗尽，但模型未能形成可验证结论', 'TOOL_BUDGET_EXHAUSTED')
         const toolStep = startOperationStep({ operationRunId, stepName: `code_tool:${decision.tool.name}`, sequence: turn, inputSummary: decision.tool.arguments })
         try {
-          const result = executeTool(sessionId, project.root, decision.tool)
+          const result = executeTool(sessionId, project, decision.tool)
           const resultText = stringify(result); const currentBytes = Number(current.bytes_read) + Buffer.byteLength(resultText, 'utf8')
           if (currentBytes > MAX_BYTES_READ) throw new CodeReadingError('本次调查读取内容超过安全预算', 'BYTE_BUDGET_EXHAUSTED')
           db.prepare(`INSERT INTO code_reading_steps(session_id,sequence,kind,tool_name,input_json,output_json,status,created_at) VALUES(?,?, 'tool',?,?,?, 'succeeded',?)`).run(sessionId, turn, decision.tool.name, stringify(decision.tool.arguments), resultText, now())

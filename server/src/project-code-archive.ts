@@ -3,13 +3,12 @@ import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { db, now } from './db.js'
 import { createOperationRun, finishOperationRun, finishOperationStep, logApp, runWithTrace, startOperationStep } from './observability.js'
+import { hasLikelySecretContent, isIgnoredSourceSegment, isProtectedSourceName } from './source-access-policy.js'
 
 const MAX_FILES = 2_000
 const MAX_FILE_BYTES = 1_000_000
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024
 const MAX_CHUNK_CHARS = 6_000
-const IGNORED_DIRS = new Set(['.git', '.svn', '.hg', 'node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.cache', 'vendor', 'target', '__pycache__', '.venv', 'venv'])
-const SENSITIVE_NAMES = /^(?:\.env(?:\..*)?|id_rsa(?:\.pub)?|.*\.(?:pem|key|p12|pfx)|credentials(?:\.json)?|secrets?(?:\.json|\.ya?ml)?)$/i
 const GENERATED_PATH = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|.*\.min\.[cm]?js|.*\.map)$/i
 
 export type ProjectLanguage = 'typescript' | 'javascript' | 'python' | 'java' | 'go' | 'rust' | 'vue' | 'sql' | 'markdown' | 'json' | 'yaml' | 'other'
@@ -89,11 +88,11 @@ function collectFiles(root: string, scopes: string[]): { files: string[]; skippe
       if (truncated) return
       const target = path.join(dir, entry.name)
       if (entry.isSymbolicLink()) { skip('symbolic_link'); continue }
-      if (entry.isDirectory()) { if (IGNORED_DIRS.has(entry.name)) skip(`ignored:${entry.name}`); else walk(target); continue }
+      if (entry.isDirectory()) { if (isIgnoredSourceSegment(entry.name)) skip(`ignored:${entry.name}`); else walk(target); continue }
       if (!entry.isFile()) continue
       seen += 1
       if (files.length >= MAX_FILES) { truncated = true; skip('file_limit'); return }
-      if (SENSITIVE_NAMES.test(entry.name)) { skip('sensitive_name'); continue }
+      if (isProtectedSourceName(entry.name)) { skip('sensitive_name'); continue }
       if (!isTextCandidate(target)) { skip('unsupported_extension'); continue }
       try {
         const size = statSync(target).size
@@ -201,6 +200,7 @@ export function scanProject(projectId: number): ReturnType<typeof projectDetail>
           let buffer: Buffer
           try { buffer = readFileSync(filename) } catch { skipped.unreadable_file = (skipped.unreadable_file ?? 0) + 1; continue }
           if (isBinary(buffer)) { skipped.binary_file = (skipped.binary_file ?? 0) + 1; continue }
+          if (hasLikelySecretContent(buffer)) { skipped.potential_secret = (skipped.potential_secret ?? 0) + 1; continue }
           if (bytesRead + buffer.length > MAX_TOTAL_BYTES) { skipped.byte_limit = (skipped.byte_limit ?? 0) + 1; continue }
           bytesRead += buffer.length
           const content = buffer.toString('utf8'); const lines = content.split(/\r?\n/); const language = languageFor(relative)

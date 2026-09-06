@@ -64,6 +64,8 @@ export interface PrepAgentEvidence {
   company?: string
   position?: string
   round?: string
+  /** 知识库证据与当前投递的元数据关系，用于优先排序与前端说明。 */
+  retrieval_scope?: 'same_company_position' | 'same_company' | 'general'
   code_session_id?: string
   code_evidence_refs?: string[]
 }
@@ -78,6 +80,7 @@ export interface PrepAgentReference {
   item_id?: number | null
   code_session_id?: string | null
   code_evidence_refs?: string[]
+  retrieval_scope?: 'same_company_position' | 'same_company' | 'general'
 }
 
 export interface PrepAgentContext {
@@ -473,15 +476,85 @@ export function buildPrepAgentReferences(runId: string): PrepAgentReference[] {
       : item.excerpt || '证据原文不可用。'
     references.push({
       ref: item.ref, type: item.type === 'review' ? 'review' : item.type === 'mastery' ? 'mastery' : item.type === 'knowledge_item' ? 'knowledge_item' : item.type === 'application' ? 'application' : item.type === 'project' ? 'project' : item.type === 'resume' ? 'resume' : 'interview',
-      title: item.title, subtitle: codeSessionId ? '读代码 Agent 调查结果' : item.type === 'knowledge_item' ? '知识库检索结果' : '计划检索证据',
+      title: item.title,
+      subtitle: codeSessionId
+        ? '读代码 Agent 调查结果'
+        : item.type === 'knowledge_item'
+          ? item.retrieval_scope === 'same_company_position'
+            ? '同公司同岗位面经（优先证据）'
+            : item.retrieval_scope === 'same_company'
+              ? '同公司面经'
+              : '知识库检索结果'
+          : '计划检索证据',
       excerpt: codeExcerpt, source_id: item.source_id ?? null, item_id: item.item_id,
-      code_session_id: codeSessionId, code_evidence_refs: codeEvidenceRefs
+      code_session_id: codeSessionId, code_evidence_refs: codeEvidenceRefs,
+      retrieval_scope: item.retrieval_scope
     })
   }
   return references
 }
 
-export function searchPrepAgentEvidence(queries: unknown): PrepAgentEvidence[] {
+interface PrepRetrievalTarget {
+  company: string
+  position: string
+  round: string
+}
+
+interface ScopedKnowledgeRow {
+  id: number
+  source_id: number | null
+  question: string
+  answer: string
+  category: string
+  mastery: number
+  company: string
+  position: string
+  round: string
+  owner: string
+}
+
+function compactMetadata(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}+#]+/gu, '')
+}
+
+function samePosition(left: string, right: string): boolean {
+  const a = compactMetadata(left)
+  const b = compactMetadata(right)
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)))
+}
+
+/**
+ * 面试准备的第一优先级是同公司、同岗位面经。这里直接按面经元数据取数，
+ * 不依赖模型是否恰好生成了公司名查询，也不让全文检索把它们淹没在通用题里。
+ */
+function scopedKnowledgeEvidence(target: PrepRetrievalTarget): PrepAgentEvidence[] {
+  const company = target.company.trim()
+  if (!company) return []
+  const rows = db.prepare(`SELECT i.id,i.source_id,i.question,COALESCE(i.answer,'') AS answer,
+      i.category,i.mastery,COALESCE(s.company,'') AS company,COALESCE(s.position,'') AS position,
+      COALESCE(s.round,'') AS round,COALESCE(s.owner,'') AS owner
+    FROM knowledge_items i
+    JOIN knowledge_sources s ON s.id=i.source_id
+    WHERE trim(COALESCE(s.company,'')) <> ''
+      AND (instr(lower(trim(s.company)), lower(trim(?))) > 0
+        OR instr(lower(trim(?)), lower(trim(s.company))) > 0)
+    ORDER BY i.updated_at DESC LIMIT 80`).all(company, company) as ScopedKnowledgeRow[]
+  const currentRound = compactMetadata(target.round)
+  return rows.map(item => {
+    const positionMatch = samePosition(item.position, target.position)
+    const roundMatch = Boolean(currentRound && compactMetadata(item.round) === currentRound)
+    return {
+      ref: '', type: 'knowledge_item' as const, item_id: item.id, source_id: item.source_id,
+      title: item.question, excerpt: clipped(item.answer, 1800), company: item.company,
+      position: item.position, round: item.round,
+      retrieval_scope: positionMatch ? 'same_company_position' as const : 'same_company' as const,
+      // 精确公司/岗位优先于同公司，轮次相同再小幅提升；分数只用于本次 Agent 内排序。
+      score: (positionMatch ? 100 : 60) + (roundMatch ? 5 : 0)
+    }
+  }).sort((left, right) => Number(right.score) - Number(left.score) || Number(left.item_id) - Number(right.item_id))
+}
+
+export function searchPrepAgentEvidence(queries: unknown, target?: PrepRetrievalTarget): PrepAgentEvidence[] {
   if (!Array.isArray(queries) || queries.length > 8) throw new PrepAgentError('queries 必须是最多 8 项的数组')
   const merged = new Map<number, RetrievedKnowledge>()
   for (const [index, value] of queries.entries()) {
@@ -498,12 +571,20 @@ export function searchPrepAgentEvidence(queries: unknown): PrepAgentEvidence[] {
       if (!existing || item.score > existing.score) merged.set(item.id, item)
     }
   }
-  return Array.from(merged.values())
+  const scoped = target ? scopedKnowledgeEvidence(target) : []
+  const selected: PrepAgentEvidence[] = []
+  const selectedIds = new Set<number>()
+  for (const item of scoped) {
+    if (item.item_id == null || selectedIds.has(item.item_id)) continue
+    selected.push(item)
+    selectedIds.add(item.item_id)
+    if (selected.length >= 10) break
+  }
+  const generic = Array.from(merged.values())
     .sort((left, right) => right.score - left.score || left.id - right.id)
-    .slice(0, 15)
-    .map((item, index) => ({
-      ref: `E${index + 1}`,
-      type: 'knowledge_item',
+    .map((item) => ({
+      ref: '',
+      type: 'knowledge_item' as const,
       item_id: item.id,
       source_id: item.sourceId,
       title: item.question,
@@ -511,8 +592,16 @@ export function searchPrepAgentEvidence(queries: unknown): PrepAgentEvidence[] {
       score: item.score,
       company: item.company,
       position: item.position,
-      round: item.round
+      round: item.round,
+      retrieval_scope: 'general' as const
     }))
+  for (const item of generic) {
+    if (item.item_id == null || selectedIds.has(item.item_id)) continue
+    selected.push(item)
+    selectedIds.add(item.item_id)
+    if (selected.length >= 15) break
+  }
+  return selected.map((item, index) => ({ ...item, ref: `E${index + 1}` }))
 }
 
 export function insertPrepAgentStep(runId: string, body: unknown): number {
@@ -642,6 +731,15 @@ function validatePlanAgainstRun(run: PrepAgentRunRow, rawPlan: unknown): { plan:
     seen.add(key)
     for (const ref of item.evidence_refs) {
       if (!validRefs.has(ref)) throw new PrepAgentError(`第 ${index + 1} 项包含无效引用 ${ref}`)
+    }
+  }
+  // 重点方向是本次运行的明确约束。前端允许修改任务文案，但不能在确认入库时静默删掉它。
+  const constraints = parsePrepAgentConstraints(run.constraints_json)
+  const normalizeFocus = (value: string) => value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
+  const covered = new Set(plan.items.flatMap(item => item.focus_areas).map(normalizeFocus))
+  for (const focus of constraints.focus) {
+    if (!covered.has(normalizeFocus(focus))) {
+      throw new PrepAgentError(`重点方向“${focus}”没有映射到任何准备任务，请保留对应任务后再确认`, 422, 'focus_not_covered')
     }
   }
   return { plan, context }

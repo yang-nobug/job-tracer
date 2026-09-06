@@ -6,6 +6,7 @@ import { applicationsRouter } from './routes/applications.js'
 import { eventsRouter } from './routes/events.js'
 import { interviewsRouter } from './routes/interviews.js'
 import { resumesRouter } from './routes/resumes.js'
+import { recoverInterruptedResumeExtractions } from './resume-text.js'
 import { statsRouter } from './routes/stats.js'
 import { knowledgeRouter } from './routes/knowledge.js'
 import { knowledgeAiRouter } from './routes/knowledge-ai.js'
@@ -39,6 +40,8 @@ configureMailAutomation(PORT)
 const app = express()
 const recoveredRecordings = recoverInterruptedRecordings()
 if (recoveredRecordings) console.log(`[recordings] 已恢复 ${recoveredRecordings} 个中断任务，可在页面点击重试`)
+const recoveredResumes = recoverInterruptedResumeExtractions()
+if (recoveredResumes) console.log(`[resumes] 已标记 ${recoveredResumes} 个中断的简历提取，可在简历选择器中重试`)
 app.use(express.json({ limit: '2mb' }))
 
 // 每个 HTTP 请求都有可回查的链路编号；内部 Python Agent 会透传该 header。

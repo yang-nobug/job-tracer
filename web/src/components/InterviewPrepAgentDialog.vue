@@ -45,6 +45,8 @@ const waitingReview = computed(() => run.value?.status === 'waiting_review')
 const totalMinutes = computed(() => editableItems.value.reduce((sum, item) => sum + Number(item.estimated_minutes || 0), 0))
 const evidenceByRef = computed(() => new Map((run.value?.evidence ?? []).map(item => [item.ref, item])))
 const codeEvidence = computed(() => (run.value?.evidence ?? []).filter(item => item.ref.startsWith('CE')))
+const enteredFocus = computed(() => parseFocus(form.focusText))
+const runFocus = computed(() => run.value?.constraints.focus ?? [])
 
 const stageLabels: Record<string, string> = {
   validate_request: '校验运行参数',
@@ -78,7 +80,11 @@ function closeSource(): void {
 function syncEditable(next: PrepAgentRun): void {
   if (next.status !== 'waiting_review' || !next.plan || loadedPlanRun.value === `${next.id}:${next.updated_at}`) return
   editableSummary.value = next.plan.summary
-  editableItems.value = next.plan.items.map(item => ({ ...item, evidence_refs: [...item.evidence_refs] }))
+  editableItems.value = next.plan.items.map(item => ({
+    ...item,
+    evidence_refs: [...item.evidence_refs],
+    focus_areas: Array.isArray(item.focus_areas) ? [...item.focus_areas] : []
+  }))
   loadedPlanRun.value = `${next.id}:${next.updated_at}`
 }
 
@@ -199,6 +205,11 @@ function resetForNewRun(): void {
   form.focusText = ''
   form.goal = props.interview ? `准备 ${props.interview.round}` : ''
   form.projectIds = []
+  form.resumeId = null
+}
+
+function parseFocus(value: string): string[] {
+  return [...new Set(value.split(/[，,\n]/).map(item => item.trim()).filter(Boolean))].slice(0, 8)
 }
 
 function requestId(): string {
@@ -215,7 +226,7 @@ async function startRun(): Promise<void> {
   }
   starting.value = true
   try {
-    const focus = form.focusText.split(/[，,\n]/).map(item => item.trim()).filter(Boolean).slice(0, 8)
+    const focus = parseFocus(form.focusText)
     const next = await api.post<PrepAgentRun>('/prep-agent/runs', {
       application_id: props.applicationId,
       interview_id: props.interview.id,
@@ -246,7 +257,7 @@ function addItem(): void {
   if (editableItems.value.length >= 12) return
   editableItems.value.push({
     title: '', category: 'knowledge', priority: 'medium', estimated_minutes: 30,
-    reason: '用户补充', evidence_refs: [], success_criteria: ''
+    focus_areas: [], reason: '用户补充', evidence_refs: [], success_criteria: ''
   })
 }
 
@@ -295,7 +306,13 @@ function evidenceLabel(ref: string): string {
   if (ref === 'APP') return '当前投递'
   if (ref === 'IV') return '当前面试'
   const item = reference(ref) ?? evidence(ref)
-  return item ? `${ref} · ${item.title}` : ref
+  if (!item) return ref
+  const prefix = item.retrieval_scope === 'same_company_position'
+    ? '同公司同岗'
+    : item.retrieval_scope === 'same_company'
+      ? '同公司'
+      : ''
+  return `${prefix ? `${prefix} · ` : ''}${ref} · ${item.title}`
 }
 
 function showReference(ref: string): void {
@@ -337,7 +354,7 @@ onBeforeUnmount(closeSource)
           建议先在复盘中记录题目、表现与改进点；当前入口不会再生成面试前准备计划。
         </el-alert>
         <el-alert type="info" :closable="false" show-icon>
-          Agent 会读取当前岗位、历史复盘和本地知识库。生成结果只有在你确认后才会写入准备清单。
+          Agent 会优先检索本地知识库里同公司、同岗位的面经，再用历史复盘与通用资料补充。生成结果只有在你确认后才会写入准备清单。
         </el-alert>
         <div v-if="historyRuns.length" class="history-picker">
           <span class="muted">历史准备计划</span>
@@ -351,6 +368,11 @@ onBeforeUnmount(closeSource)
           </el-form-item>
           <el-form-item label="重点方向（逗号分隔，可选）" class="focus-field">
             <el-input v-model="form.focusText" placeholder="前端基础，项目表达，算法" />
+            <div class="field-tip">每个方向都会被强制映射到至少一条任务；缺失时计划会自动要求修订。</div>
+            <div v-if="enteredFocus.length" class="focus-preview">
+              <span>本次将重点准备：</span>
+              <el-tag v-for="item in enteredFocus" :key="item" size="small" effect="plain">{{ item }}</el-tag>
+            </div>
           </el-form-item>
           <el-form-item v-if="availableProjects.length" label="关联项目（可选，最多 2 个）" class="project-field">
             <el-select v-model="form.projectIds" multiple collapse-tags :max-collapse-tags="2" :multiple-limit="2" placeholder="选择后，Agent 会按岗位重点只读调查代码">
@@ -383,6 +405,11 @@ onBeforeUnmount(closeSource)
           <el-tag v-else-if="run.status === 'failed'" type="danger">失败</el-tag>
           <el-tag v-else-if="run.status === 'cancelled'" type="info">已取消</el-tag>
           <el-tag v-else>运行中</el-tag>
+        </div>
+
+        <div v-if="runFocus.length" class="run-focus">
+          <span>本次重点</span>
+          <el-tag v-for="item in runFocus" :key="item" size="small" effect="plain">{{ item }}</el-tag>
         </div>
 
         <div v-if="historyRuns.length > 1" class="history-picker">
@@ -530,6 +557,10 @@ onBeforeUnmount(closeSource)
               <el-input v-model="item.reason" maxlength="600" placeholder="安排理由" />
             </div>
             <el-input v-model="item.success_criteria" maxlength="500" placeholder="完成标准" />
+            <div v-if="item.focus_areas.length" class="item-focus">
+              <span>覆盖重点：</span>
+              <el-tag v-for="focus in item.focus_areas" :key="focus" size="small" effect="plain">{{ focus }}</el-tag>
+            </div>
             <div v-if="item.evidence_refs.length" class="refs">
               <span>依据：</span>
               <el-button v-for="refName in item.evidence_refs" :key="refName" link type="primary" size="small" @click="showReference(refName)">{{ evidenceLabel(refName) }}</el-button>
@@ -593,6 +624,11 @@ onBeforeUnmount(closeSource)
 .focus-field { flex: 1; }
 .project-field :deep(.el-select) { width: 100%; }
 .field-tip { margin-top: 5px; color: #909399; font-size: 12px; line-height: 1.5; }
+.focus-preview, .run-focus, .item-focus { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.focus-preview { margin-top: 8px; color: #667085; font-size: 12px; }
+.run-focus { margin: -2px 0 12px; padding: 8px 10px; border: 1px solid #dbe9ff; border-radius: 8px; background: #f7fbff; color: #4873ad; font-size: 12px; }
+.run-focus > span, .item-focus > span { font-weight: 600; }
+.item-focus { margin-top: 8px; color: #718096; font-size: 12px; }
 .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .run-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .history-picker { display: flex; align-items: center; gap: 10px; margin: 12px 0; }

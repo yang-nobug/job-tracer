@@ -6,6 +6,7 @@ export const store = reactive({
   formDrawerOpen: false,        // 录入/编辑抽屉
   editingApp: null as Application | null, // null = 新建
   detailId: null as number | null,        // 详情抽屉对应的记录 id
+  resumeLibraryOpen: false,               // 全局简历库
   knowledgeIngestOpen: false,   // 知识库「录入面经」弹窗
   knowledgeVersion: 0,          // 知识库数据变更计数，视图 watch 刷新
   dataVersion: 0,               // 数据变更计数，各视图 watch 它来刷新

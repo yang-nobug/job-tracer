@@ -22,6 +22,7 @@ export type AiTask =
   | 'reviewAdvice'
   | 'interviewPrepAgent'
   | 'codeReading'
+  | 'resumeExtract'
   | 'mailRecruitmentExtract'
   | 'mailScheduleReview'
 
@@ -63,7 +64,7 @@ export interface ArkConfig {
 
 export const AI_TASKS: AiTask[] = [
   'applicationImport', 'jdParse', 'knowledgeExtract', 'answerGenerate',
-  'tutor', 'recordingReview', 'reviewAdvice', 'interviewPrepAgent', 'codeReading',
+  'tutor', 'recordingReview', 'reviewAdvice', 'interviewPrepAgent', 'codeReading', 'resumeExtract',
   'mailRecruitmentExtract', 'mailScheduleReview'
 ]
 
@@ -77,6 +78,7 @@ const TASK_DEFAULTS: Record<AiTask, Required<Omit<ArkTaskConfig, 'model' | 'maxI
   reviewAdvice: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.3, timeoutMs: 90_000, thinking: 'disabled' },
   interviewPrepAgent: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.2, timeoutMs: 90_000, thinking: 'disabled' },
   codeReading: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0.1, timeoutMs: 90_000, thinking: 'disabled' },
+  resumeExtract: { outputMode: 'text', maxOutputTokens: 8192, temperature: 0, timeoutMs: 120_000, thinking: 'disabled' },
   mailRecruitmentExtract: { outputMode: 'text', maxOutputTokens: 4096, temperature: 0, timeoutMs: 90_000, thinking: 'disabled' },
   mailScheduleReview: { outputMode: 'text', maxOutputTokens: 2048, temperature: 0, timeoutMs: 60_000, thinking: 'disabled' }
 }

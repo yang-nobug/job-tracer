@@ -4,7 +4,8 @@ import { db, now } from './db.js'
 import type { MailRecruitmentExtraction } from './mail-extraction-contracts.js'
 import type { MailScheduleReview } from './mail-schedule-review.js'
 import { canAutomaticallyConfirm } from './mail-automation-policy.js'
-import { hasQqAuthorizationCode } from './mail-credential-store.js'
+import { hasMailAuthorizationCode } from './mail-credential-store.js'
+import { normalizeMailProvider } from './mail-client.js'
 import { createOperationRun, finishOperationRun } from './observability.js'
 
 interface AutomationSettingsRow {
@@ -280,14 +281,14 @@ mailAutomationRouter.patch('/mail/automation', (req: Request, res: Response) => 
     return
   }
   if (enabled) {
-    const account = db.prepare("SELECT id, status, credential_ref FROM mail_accounts WHERE provider = 'qq' LIMIT 1")
-      .get() as { id: number; status: string; credential_ref: string } | undefined
+    const account = db.prepare("SELECT id, provider, status, credential_ref FROM mail_accounts WHERE provider IN ('qq', '163') ORDER BY updated_at DESC, id DESC LIMIT 1")
+      .get() as { id: number; provider: string; status: string; credential_ref: string } | undefined
     if (!account) {
-      res.status(422).json({ message: '请先连接 QQ 邮箱' })
+      res.status(422).json({ message: '请先连接邮箱' })
       return
     }
-    if (account.status !== 'connected' || !hasQqAuthorizationCode(account.credential_ref)) {
-      res.status(422).json({ message: 'QQ 邮箱连接或授权码不可用，请重新测试连接' })
+    if (account.status !== 'connected' || !hasMailAuthorizationCode(normalizeMailProvider(account.provider), account.credential_ref)) {
+      res.status(422).json({ message: '邮箱连接或授权码不可用，请重新测试连接' })
       return
     }
   }
@@ -297,9 +298,9 @@ mailAutomationRouter.patch('/mail/automation', (req: Request, res: Response) => 
 })
 
 mailAutomationRouter.post('/mail/automation/run', async (_req: Request, res: Response) => {
-  const account = db.prepare("SELECT id FROM mail_accounts WHERE provider = 'qq' LIMIT 1").get()
+  const account = db.prepare("SELECT id FROM mail_accounts WHERE provider IN ('qq', '163') LIMIT 1").get()
   if (!account) {
-    res.status(422).json({ message: '请先连接 QQ 邮箱' })
+    res.status(422).json({ message: '请先连接邮箱' })
     return
   }
   try {

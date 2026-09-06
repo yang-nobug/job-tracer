@@ -164,7 +164,16 @@ prepAgentRouter.get('/internal/prep-agent/runs/:id/context', (req, res) => {
 prepAgentRouter.post('/internal/prep-agent/search', (req, res) => {
   const runId = typeof req.body?.run_id === 'string' ? req.body.run_id : ''
   const run = runId ? getPrepAgentRunRow(runId) : null
-  const execute = () => res.json({ evidence: searchPrepAgentEvidence(req.body?.queries) })
+  const execute = () => {
+    const context = run ? buildPrepAgentContext(run.id) : null
+    res.json({
+      evidence: searchPrepAgentEvidence(req.body?.queries, context ? {
+        company: context.application.company,
+        position: context.application.position,
+        round: context.interview.round
+      } : undefined)
+    })
+  }
   if (run?.trace_id) runWithTrace({ traceId: run.trace_id, operationRunId: run.operation_run_id ?? undefined }, execute)
   else execute()
 })

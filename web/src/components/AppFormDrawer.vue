@@ -21,6 +21,7 @@ interface FormState {
   location: string
   resume_id: number | null
   jd_link: string
+  application_link: string
   jd_text: string
   contact_name: string
   contact_info: string
@@ -31,7 +32,7 @@ function emptyForm(): FormState {
   return {
     company: '', position: '', status: 'unsent', applied_at: null, applied_time: null,
     channel: '官网', location: '', resume_id: null,
-    jd_link: '', jd_text: '', contact_name: '', contact_info: '', notes: ''
+    jd_link: '', application_link: '', jd_text: '', contact_name: '', contact_info: '', notes: ''
   }
 }
 
@@ -131,7 +132,7 @@ watch(
         Object.assign(form, {
           company: e.company, position: e.position, status: e.status,
           applied_at: e.applied_at, applied_time: e.applied_time ?? null, channel: e.channel || '', location: e.location || '',
-          resume_id: e.resume_id, jd_link: e.jd_link || '', jd_text: e.jd_text || '',
+          resume_id: e.resume_id, jd_link: e.jd_link || '', application_link: e.application_link || '', jd_text: e.jd_text || '',
           contact_name: e.contact_name || '', contact_info: e.contact_info || '', notes: e.notes || ''
         })
       } else {
@@ -163,7 +164,7 @@ async function save(): Promise<void> {
     const payload = {
       company: form.company, position: form.position, status: form.status,
       applied_at: form.applied_at, applied_time: form.applied_time || null, channel: form.channel, location: form.location,
-      resume_id: form.resume_id, jd_link: form.jd_link, jd_text: form.jd_text,
+      resume_id: form.resume_id, jd_link: form.jd_link, application_link: form.application_link, jd_text: form.jd_text,
       contact_name: form.contact_name, contact_info: form.contact_info, notes: form.notes,
       import_id: importDraft.value?.id, import_confirmed: importConfirmed.value, import_manual: importManual.value
     }
@@ -325,8 +326,11 @@ const channels = computed(() => DEFAULT_CHANNELS)
         <el-form-item label="简历" class="span-2">
           <ResumePicker v-model="form.resume_id" :reload-trigger="resumesReloadTrigger" />
         </el-form-item>
-        <el-form-item label="投递链接" class="span-2">
-          <el-input v-model="form.jd_link" placeholder="https://…（职位页 / 进度查询页，可选）" />
+        <el-form-item label="JD 链接" class="span-2">
+          <el-input v-model="form.jd_link" placeholder="https://…（岗位详情 / 职位来源，可选）" />
+        </el-form-item>
+        <el-form-item label="投递进度链接" class="span-2">
+          <el-input v-model="form.application_link" placeholder="https://…（投递后的查询进度页面，可选）" />
         </el-form-item>
         <el-form-item label="JD 正文" class="span-2">
           <el-input v-model="form.jd_text" type="textarea" :rows="4" placeholder="粘贴职位描述快照（可选）" />

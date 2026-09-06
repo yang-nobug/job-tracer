@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { REVIEWS_DIR } from './db.js'
 
@@ -48,4 +48,12 @@ export function readReviewFile(relPath: string): string {
 export function writeReviewFile(relPath: string, content: string): void {
   const filePath = path.join(REVIEWS_DIR, path.basename(relPath))
   writeFileSync(filePath, content, 'utf-8')
+}
+
+/** 调用方确认没有其他面试引用时，才删除对应的本地复盘文件。 */
+export function deleteReviewFile(relPath: string): boolean {
+  const filePath = path.join(REVIEWS_DIR, path.basename(relPath))
+  if (!existsSync(filePath)) return false
+  unlinkSync(filePath)
+  return true
 }

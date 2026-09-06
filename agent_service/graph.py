@@ -80,6 +80,11 @@ def unique_warnings(*groups: list[str]) -> list[str]:
     return result[:30]
 
 
+def normalized_focus(value: Any) -> str:
+    """用于校验用户重点是否被原样映射到计划任务，忽略大小写与空白差异。"""
+    return "".join(str(value).strip().casefold().split())
+
+
 def plan_issues(state: PrepAgentState, plan: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     items = plan.get("items") if isinstance(plan, dict) else None
@@ -115,6 +120,40 @@ def plan_issues(state: PrepAgentState, plan: dict[str, Any]) -> list[dict[str, A
         for ref in item.get("evidence_refs", []):
             if str(ref) not in valid_refs:
                 issues.append({"code": "INVALID_REFERENCE", "item_index": index, "message": f"无效引用 {ref}"})
+    # 用户手动输入的重点是显式约束。不能只在总览文字里提到，也不能让模型静默忽略。
+    requested_focus: list[str] = []
+    for value in state.get("constraints", {}).get("focus", []):
+        text = str(value).strip()
+        if text and normalized_focus(text) not in {normalized_focus(item) for item in requested_focus}:
+            requested_focus.append(text)
+    covered_focus = {
+        normalized_focus(area)
+        for item in items if isinstance(item, dict)
+        for area in (item.get("focus_areas", []) if isinstance(item.get("focus_areas", []), list) else [])
+        if str(area).strip()
+    }
+    for focus in requested_focus:
+        if normalized_focus(focus) not in covered_focus:
+            issues.append({
+                "code": "USER_FOCUS_NOT_COVERED", "item_index": None,
+                "message": f"没有为用户重点方向“{focus}”安排对应任务",
+            })
+    # 一旦命中同公司同岗位面经，它就是比通用八股更强的准备依据，计划必须实际使用。
+    company_role_refs = {
+        str(item.get("ref"))
+        for item in state.get("evidence", [])
+        if item.get("retrieval_scope") == "same_company_position" and str(item.get("ref", "")).strip()
+    }
+    plan_refs = {
+        str(ref)
+        for item in items if isinstance(item, dict)
+        for ref in (item.get("evidence_refs", []) if isinstance(item.get("evidence_refs", []), list) else [])
+    }
+    if company_role_refs and not company_role_refs.intersection(plan_refs):
+        issues.append({
+            "code": "ROLE_REQUIREMENT_NOT_COVERED", "item_index": None,
+            "message": "已检索到同公司同岗位面经，但计划没有引用其中任何一条",
+        })
     return issues
 
 
@@ -222,6 +261,7 @@ def build_graph(client: JobTracerClient):
     async def plan_retrieval_queries(state: PrepAgentState) -> NodeResult:
         response = await client.model(state["run_id"], "query_plan", {
             "role_profile": state["role_profile"],
+            "application": state["context"]["application"],
             "interview": state["context"]["interview"],
             "user_goal": state["user_goal"],
             "focus": state["constraints"].get("focus", []),
@@ -257,10 +297,14 @@ def build_graph(client: JobTracerClient):
         skills = [str(item.get("text", "")).strip() for item in profile.get("must_have_skills", []) if isinstance(item, dict)]
         application = state["context"]["application"]
         role = str(application.get("position") or "目标岗位")
+        focus = [str(item).strip() for item in state["constraints"].get("focus", []) if str(item).strip()]
         objective = f"为 {application.get('company') or '目标公司'} 的 {role} 面试准备：{state['user_goal']}"
+        if focus:
+            objective += f"。用户指定重点：{'、'.join(focus)}"
         questions = [
             f"定位项目的启动入口和核心调用链，提取最适合向 {role} 面试官解释的真实实现。",
             "找出项目的异常处理、边界校验、状态管理、可观测性或测试等可靠性设计；不存在时要明确说明。",
+            *[f"围绕用户指定重点“{item}”，在代码中查找可用于面试表达的真实实现或明确说明不存在。" for item in focus[:2]],
             *[f"围绕岗位关注点“{item}”，在代码中查找对应实现或证明其不存在。" for item in signals[:2] if item],
             *[f"围绕技能“{item}”，找出可用于项目表达的具体模块、调用关系或设计取舍。" for item in skills[:2] if item],
         ][:6]
@@ -337,6 +381,7 @@ def build_graph(client: JobTracerClient):
             "code_evidence": state.get("code_evidence", []),
             "retrieved_evidence": state.get("evidence", []),
             "user_goal": state["user_goal"],
+            "user_focus": state["constraints"].get("focus", []),
         })
         value = dict(response["value"])
         warnings = unique_warnings(state.get("warnings", []), list(value.get("warnings", [])))
@@ -389,6 +434,7 @@ def build_graph(client: JobTracerClient):
                 *[item.get("ref") for item in state["context"].get("projects", [])],
                 *[item.get("ref") for item in state.get("code_evidence", [])],
             ],
+            "user_focus": state["constraints"].get("focus", []),
             "deterministic_issues": deterministic,
         })
         value = dict(response["value"])
@@ -402,7 +448,7 @@ def build_graph(client: JobTracerClient):
                 deduplicated.append(issue)
         verdict = "revise" if any(issue.get("code") in {
             "INVALID_REFERENCE", "UNSUPPORTED_CLAIM", "DUPLICATED_ITEM",
-            "VAGUE_ACTION", "MISSING_SUCCESS_CRITERIA",
+            "VAGUE_ACTION", "MISSING_SUCCESS_CRITERIA", "USER_FOCUS_NOT_COVERED",
         } for issue in deduplicated) else str(value.get("verdict", "warn"))
         return {
             "critic_result": {"verdict": verdict, "issues": deduplicated[:30]},

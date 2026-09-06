@@ -40,6 +40,7 @@ export interface Application {
   location: string | null
   resume_id: number | null
   jd_link: string | null
+  application_link: string | null
   jd_text: string | null
   contact_name: string | null
   contact_info: string | null
@@ -65,6 +66,11 @@ export interface Resume {
   extraction_error?: string | null
   extracted_at?: string | null
   text_available?: 0 | 1 | boolean
+  extraction_method?: 'vision_pdf' | 'docx_xml' | null
+  extraction_model?: string | null
+  page_count?: number | null
+  pages_completed?: number
+  started_at?: string | null
 }
 
 export interface AppEvent {
@@ -116,8 +122,10 @@ export interface PrepAgentEvidence {
   company?: string
   position?: string
   round?: string
+  retrieval_scope?: 'same_company_position' | 'same_company' | 'general'
   code_session_id?: string
   code_evidence_refs?: string[]
+  retrieval_scope?: 'same_company_position' | 'same_company' | 'general'
 }
 
 export interface PrepAgentReference {
@@ -136,6 +144,7 @@ export interface PrepPlanItem {
   title: string
   category: 'knowledge' | 'project' | 'coding' | 'communication' | 'mock'
   priority: 'high' | 'medium' | 'low'
+  focus_areas: string[]
   estimated_minutes: number
   reason: string
   evidence_refs: string[]

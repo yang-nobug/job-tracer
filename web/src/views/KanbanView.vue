@@ -57,6 +57,8 @@ const columns = computed<{ before: KanbanColumn[]; assessment: KanbanColumn[]; i
 
 const assessmentTotal = computed(() => columns.value.assessment.reduce((n, c) => n + c.list.length, 0))
 const interviewTotal = computed(() => columns.value.interview.reduce((n, c) => n + c.list.length, 0))
+const offerTotal = computed(() => columns.value.after.find(column => column.key === 'offer')?.list.length ?? 0)
+const activeTotal = computed(() => activeApps.value.length)
 
 function getListRef(key: string): Application[] {
   const all = [
@@ -84,10 +86,10 @@ async function onChange(key: Status | 'rejected'): Promise<void> {
       return
     }
 
-    // 从未投递拖入已投递 -> 先弹窗，顺手填投递链接（职位页/进度查询页）
+    // 从未投递拖入已投递 -> 先弹窗，顺手填投递进度查询链接。
     if (!wantRejected && key === 'applied' && app.status === 'unsent') {
       pendingApplied.value = app
-      appliedForm.jd_link = app.jd_link || ''
+      appliedForm.application_link = app.application_link || ''
       appliedForm.applied_at = app.applied_at
       return
     }
@@ -152,9 +154,9 @@ function cancelInterview(): void {
   load() // 撤销拖拽造成的视觉变化
 }
 
-// 拖入已投递时补投递链接
+// 拖入已投递时补投递进度链接
 const pendingApplied = ref<Application | null>(null)
-const appliedForm = reactive({ jd_link: '', applied_at: null as string | null })
+const appliedForm = reactive({ application_link: '', applied_at: null as string | null })
 
 function useToday() {
   const date = new Date()
@@ -166,8 +168,8 @@ async function confirmApplied(withLink: boolean): Promise<void> {
   if (!app) return
   if (!appliedForm.applied_at || !isCalendarDate(appliedForm.applied_at)) { ElMessage.warning('请先确认实际投递日期'); return }
   try {
-    const link = withLink ? appliedForm.jd_link.trim() : (app.jd_link || '')
-    await api.put(`/applications/${app.id}`, { ...app, status: 'applied', jd_link: link, applied_at: appliedForm.applied_at })
+    const link = withLink ? appliedForm.application_link.trim() : (app.application_link || '')
+    await api.put(`/applications/${app.id}`, { ...app, status: 'applied', application_link: link, applied_at: appliedForm.applied_at })
     store.dataVersion++
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -226,7 +228,21 @@ const GROUP_COLOR = '#f5a623'
 </script>
 
 <template>
-  <div class="kanban">
+  <div class="kanban-page">
+    <section class="kanban-intro">
+      <div>
+        <p class="page-kicker">APPLICATION PIPELINE</p>
+        <h1>投递进度</h1>
+        <p>拖动卡片更新进度；进入考核或面试阶段时，系统会提醒你补充实际时间。</p>
+      </div>
+      <div class="pipeline-summary" aria-label="投递概览">
+        <div><strong>{{ activeTotal }}</strong><span>进行中</span></div>
+        <div><strong>{{ assessmentTotal + interviewTotal }}</strong><span>待准备</span></div>
+        <div><strong>{{ offerTotal }}</strong><span>Offer</span></div>
+      </div>
+    </section>
+
+    <div class="kanban">
     <!-- 前段：未投递（可折叠）/ 已投递 -->
     <template v-for="col in columns.before" :key="col.key">
       <div
@@ -276,7 +292,7 @@ const GROUP_COLOR = '#f5a623'
               <span v-if="element.rejected_at" class="card-rejected">
                 {{ element.reject_type === 'me' ? '我拒' : '挂' }}
               </span>
-              <a v-if="element.jd_link" class="card-link" :href="element.jd_link" target="_blank" @click.stop>🔗</a>
+              <a v-if="element.application_link" class="card-link" :href="element.application_link" target="_blank" rel="noopener noreferrer" title="查看投递进度" @click.stop>🔗</a>
             </div>
             <div class="card-position">{{ element.position }}</div>
             <div class="card-meta">
@@ -333,7 +349,7 @@ const GROUP_COLOR = '#f5a623'
                   <span v-if="element.rejected_at" class="card-rejected">
                     {{ element.reject_type === 'me' ? '我拒' : '挂' }}
                   </span>
-                  <a v-if="element.jd_link" class="card-link" :href="element.jd_link" target="_blank" @click.stop>🔗</a>
+                  <a v-if="element.application_link" class="card-link" :href="element.application_link" target="_blank" rel="noopener noreferrer" title="查看投递进度" @click.stop>🔗</a>
                 </div>
                 <div class="card-position">{{ element.position }}</div>
                 <div class="card-meta">
@@ -391,7 +407,7 @@ const GROUP_COLOR = '#f5a623'
                   <span v-if="element.rejected_at" class="card-rejected">
                     {{ element.reject_type === 'me' ? '我拒' : '挂' }}
                   </span>
-                  <a v-if="element.jd_link" class="card-link" :href="element.jd_link" target="_blank" @click.stop>🔗</a>
+                  <a v-if="element.application_link" class="card-link" :href="element.application_link" target="_blank" rel="noopener noreferrer" title="查看投递进度" @click.stop>🔗</a>
                 </div>
                 <div class="card-position">{{ element.position }}</div>
                 <div class="card-meta">
@@ -457,7 +473,7 @@ const GROUP_COLOR = '#f5a623'
               <span v-if="element.rejected_at" class="card-rejected">
                 {{ element.reject_type === 'me' ? '我拒' : '挂' }}
               </span>
-              <a v-if="element.jd_link" class="card-link" :href="element.jd_link" target="_blank" @click.stop>🔗</a>
+              <a v-if="element.application_link" class="card-link" :href="element.application_link" target="_blank" rel="noopener noreferrer" title="查看投递进度" @click.stop>🔗</a>
             </div>
             <div class="card-position">{{ element.position }}</div>
             <div class="card-meta">
@@ -473,7 +489,9 @@ const GROUP_COLOR = '#f5a623'
       </div>
     </template>
 
-    <!-- 拖入已投递时补投递链接 -->
+    </div>
+
+    <!-- 拖入已投递时补投递进度链接 -->
     <el-dialog
       :model-value="!!pendingApplied"
       title="标记为已投递"
@@ -484,9 +502,9 @@ const GROUP_COLOR = '#f5a623'
     >
       <div v-if="pendingApplied">
         <p class="iv-prompt-tip">
-          「{{ pendingApplied.company }}」进入 <b>已投递</b>，顺手填上投递链接（职位页 / 进度查询页），以后点卡片上的 🔗 就能回来看进度：
+          「{{ pendingApplied.company }}」进入 <b>已投递</b>，可以填入投递进度查询页面，之后点卡片上的 🔗 可直接查看：
         </p>
-        <el-input v-model="appliedForm.jd_link" placeholder="https://…（可留空，稍后在编辑里补）" clearable />
+        <el-input v-model="appliedForm.application_link" placeholder="https://…（可留空，稍后在编辑里补）" clearable />
         <p>实际投递日期（必填，不会自动补今天）</p>
         <el-date-picker v-model="appliedForm.applied_at" type="date" value-format="YYYY-MM-DD" placeholder="实际投递日期" />
         <el-button link type="primary" @click="useToday">明确使用今天</el-button>
@@ -529,59 +547,72 @@ const GROUP_COLOR = '#f5a623'
 </template>
 
 <style scoped>
+.kanban-page { min-width: 0; }
+.kanban-intro {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 24px;
+  padding: 4px 2px 18px;
+}
+.page-kicker { margin: 0 0 7px; color: var(--jt-primary); font-size: 11px; font-weight: 800; letter-spacing: 1.15px; }
+.kanban-intro h1 { margin: 0; color: var(--jt-text); font-size: 26px; line-height: 1.2; letter-spacing: -.45px; }
+.kanban-intro p:not(.page-kicker) { margin: 8px 0 0; color: var(--jt-text-muted); font-size: 13px; }
+.pipeline-summary { display: flex; overflow: hidden; border: 1px solid var(--jt-line); border-radius: 11px; background: var(--jt-surface); }
+.pipeline-summary div { display: grid; min-width: 78px; padding: 9px 13px; border-left: 1px solid var(--jt-line); }
+.pipeline-summary div:first-child { border-left: 0; }
+.pipeline-summary strong { color: var(--jt-text); font-size: 18px; line-height: 1.1; }
+.pipeline-summary span { margin-top: 4px; color: var(--jt-text-muted); font-size: 11px; }
 .kanban {
-  display: flex; gap: 8px; overflow-x: auto; align-items: stretch;
-  padding: 12px 0 12px; min-height: calc(100vh - 150px);
+  display: flex; gap: 10px; overflow-x: auto; align-items: stretch;
+  min-height: calc(100vh - 224px); padding: 2px 0 12px;
 }
 .kanban-col {
-  background: #e9edf4; border-radius: 10px;
+  background: #edf1f7; border: 1px solid #e4eaf2; border-radius: 12px;
   flex: 1 1 0; min-width: 128px;
-  display: flex; flex-direction: column; max-height: calc(100vh - 150px);
+  display: flex; flex-direction: column; max-height: calc(100vh - 224px);
 }
 /* 面试组：占 4 个子列的宽度，容器样式与普通列一致 */
 .kanban-group {
-  background: #e9edf4; border-radius: 10px;
+  background: #edf1f7; border: 1px solid #e4eaf2; border-radius: 12px;
   flex: 3.6 3.6 0; min-width: 420px;
-  display: flex; flex-direction: column; max-height: calc(100vh - 150px);
+  display: flex; flex-direction: column; max-height: calc(100vh - 224px);
 }
 /* 考核组：3 个子列 */
 .assessment-group { flex: 2.7 2.7 0; min-width: 320px; }
 .group-body {
-  flex: 1; display: flex; gap: 6px; padding: 0 8px 8px;
+  flex: 1; display: flex; gap: 7px; padding: 0 8px 8px;
   min-height: 0; overflow-x: auto;
 }
 .kanban-subcol {
   flex: 1 1 0; min-width: 96px;
-  background: #f4f6fa; border-radius: 8px;
+  background: rgba(255, 255, 255, .63); border: 1px solid rgba(255, 255, 255, .8); border-radius: 9px;
   display: flex; flex-direction: column;
 }
 .sub-head {
   display: flex; justify-content: center; align-items: center; gap: 7px;
-  padding: 9px 8px 7px; white-space: nowrap;
+  padding: 10px 8px 8px; white-space: nowrap;
 }
 .sub-title {
   display: flex; align-items: center; gap: 5px;
-  font-weight: 600; font-size: 13px; color: #3c4353;
+  font-weight: 700; font-size: 12px; color: #536174;
 }
 .sub-count {
-  background: #d3d9e4; color: #59637a; border-radius: 9px;
+  background: #dce4ef; color: #607086; border-radius: 9px;
   padding: 0 7px; font-size: 12px; font-weight: 600; line-height: 18px;
 }
 .kanban-subcol .col-body { padding: 0 5px 6px; min-height: 50px; }
 .col-head {
   display: flex; justify-content: center; align-items: center; gap: 8px;
-  padding: 13px 10px 11px; white-space: nowrap;
+  padding: 14px 10px 12px; white-space: nowrap;
 }
 .col-title {
   display: flex; align-items: center; gap: 6px;
-  font-weight: 600; font-size: 15px; color: #3c4353;
+  font-weight: 750; font-size: 14px; color: #344256;
 }
 .col-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .fold-btn {
   color: #9aa2b1; font-size: 13px; line-height: 1; cursor: pointer;
   padding: 2px 5px; border-radius: 4px; user-select: none;
 }
-.fold-btn:hover { color: #409eff; background: #ecf5ff; }
+.fold-btn:hover { color: var(--jt-primary); background: var(--jt-primary-soft); }
 /* 折叠列：窄条 + 竖排文字 + 数量角标 */
 .col-collapsed {
   flex: 0 0 44px; min-width: 44px;
@@ -589,26 +620,26 @@ const GROUP_COLOR = '#f5a623'
   padding: 12px 0 10px; gap: 10px; cursor: pointer;
   transition: background 0.15s;
 }
-.col-collapsed:hover { background: #e2e8f2; }
+.col-collapsed:hover { background: #e7edf6; }
 .collapsed-label {
   writing-mode: vertical-rl; letter-spacing: 3px;
   font-weight: 600; font-size: 13px; color: #3c4353;
 }
 .collapsed-arrow { color: #9aa2b1; font-size: 14px; line-height: 1; margin-top: auto; }
 .col-count {
-  background: #d3d9e4; color: #59637a; border-radius: 10px;
+  background: #dce4ef; color: #607086; border-radius: 10px;
   padding: 0 8px; font-size: 13px; font-weight: 600; line-height: 20px;
 }
 .col-body { flex: 1; overflow-y: auto; padding: 0 6px 8px; min-height: 60px; }
 .card {
-  background: #fff; border-radius: 8px; padding: 8px 9px; margin-bottom: 6px;
-  border: 1px solid rgba(28, 36, 52, 0.05);
-  box-shadow: 0 1px 2px rgba(28, 36, 52, 0.04);
+  background: #fff; border-radius: 9px; padding: 10px; margin-bottom: 7px;
+  border: 1px solid rgba(218, 226, 238, .9) !important;
+  box-shadow: 0 1px 2px rgba(21, 42, 76, .035);
   cursor: pointer;
   transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
 }
 .card:hover {
-  box-shadow: 0 6px 16px rgba(28, 36, 52, 0.1);
+  box-shadow: 0 8px 18px rgba(21, 42, 76, .11);
   transform: translateY(-1px);
   border-color: rgba(28, 36, 52, 0.1);
 }
@@ -621,12 +652,12 @@ const GROUP_COLOR = '#f5a623'
 .card-ghost { opacity: 0.4; }
 .card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .card-avatar {
-  width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
+  width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0;
   color: #fff; font-size: 13px; font-weight: 600;
   display: flex; align-items: center; justify-content: center;
 }
 .card-company {
-  font-weight: 600; font-size: 15px; color: #1f2637; min-width: 0;
+  font-weight: 700; font-size: 14px; color: var(--jt-text); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .card-link {
@@ -640,18 +671,24 @@ const GROUP_COLOR = '#f5a623'
   font-size: 12px; flex-shrink: 0;
 }
 .card-position {
-  font-size: 14px; color: #6b7385; margin-top: 3px;
+  font-size: 13px; color: #667387; margin-top: 5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .card-meta {
   display: flex; justify-content: space-between; align-items: center; margin-top: 5px;
-  font-size: 13px; color: #9aa2b1;
+  font-size: 11px; color: #8793a5;
 }
-.card-channel { background: #f1f3f7; border-radius: 4px; padding: 0 4px; }
+.card-channel { background: #f1f4f8; border-radius: 4px; padding: 1px 4px; }
 .card-round {
   background: #fef3e2; color: #d97a0d; border-radius: 4px; padding: 0 5px;
   font-weight: 600;
 }
-.card-next { color: #d97a0d; font-weight: 500; }
+.card-next { color: #d97706; font-weight: 650; }
 .iv-prompt-tip { margin: 0 0 12px; font-size: 14px; color: #3c4353; line-height: 1.6; }
+@media (max-width: 720px) {
+  .kanban-intro { align-items: flex-start; flex-direction: column; gap: 14px; }
+  .pipeline-summary { width: 100%; }
+  .pipeline-summary div { flex: 1; }
+  .kanban { min-height: calc(100vh - 270px); }
+}
 </style>

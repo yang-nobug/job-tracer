@@ -4,7 +4,7 @@ import path from 'node:path'
 import { existsSync, unlinkSync } from 'node:fs'
 import type { Request, Response } from 'express'
 import { db, UPLOADS_DIR, now } from '../db.js'
-import { extractResumeText, listResumesWithText, resumeWithText } from '../resume-text.js'
+import { requestResumeTextExtraction, listResumesWithText, resumeWithText } from '../resume-text.js'
 
 export const resumesRouter = Router()
 
@@ -52,14 +52,14 @@ resumesRouter.post('/', upload.single('file'), (req: Request, res: Response) => 
       req.body?.note?.trim() || null,
       now()
     )
-  // 上传后只在本机通过隔离 Python 进程提取文本；失败不影响文件保存，用户可稍后重试。
-  res.status(201).json(extractResumeText(Number(result.lastInsertRowid)))
+  // 简历提取始终异步执行：PDF 渲染后会交由视觉模型识别，不能阻塞 Node 服务。
+  res.status(202).json(requestResumeTextExtraction(Number(result.lastInsertRowid)))
 })
 
 resumesRouter.post('/:id/extract', (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (!Number.isInteger(id) || id <= 0) { res.status(422).json({ message: '简历编号无效' }); return }
-  try { res.json(extractResumeText(id)) }
+  try { res.status(202).json(requestResumeTextExtraction(id)) }
   catch (error) { res.status(500).json({ message: (error as Error).message || '简历提取失败' }) }
 })
 
@@ -82,6 +82,33 @@ resumesRouter.get('/:id/file', (req: Request, res: Response) => {
   res.setHeader('Content-Type', contentType)
   res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(resume.filename)}`)
   res.sendFile(filePath)
+})
+
+// 提取结果仅保留在本地 SQLite；用户可在简历库核对后再用于 AI 面试准备。
+resumesRouter.get('/:id/text', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) { res.status(422).json({ message: '简历编号无效' }); return }
+  const resume = db.prepare('SELECT id, filename FROM resumes WHERE id = ?').get(id) as
+    | { id: number; filename: string }
+    | undefined
+  if (!resume) { res.status(404).json({ message: '简历不存在' }); return }
+  const extracted = db.prepare(`SELECT status, text_content, extraction_method, model, page_count, extracted_at
+    FROM resume_texts WHERE resume_id = ?`).get(id) as
+    | { status: string; text_content: string | null; extraction_method: string | null; model: string | null; page_count: number | null; extracted_at: string | null }
+    | undefined
+  if (extracted?.status !== 'completed' || !extracted.text_content) {
+    res.status(409).json({ message: '简历文字尚未提取完成' })
+    return
+  }
+  res.json({
+    resume_id: resume.id,
+    filename: resume.filename,
+    text: extracted.text_content,
+    extraction_method: extracted.extraction_method,
+    extraction_model: extracted.model,
+    page_count: extracted.page_count,
+    extracted_at: extracted.extracted_at
+  })
 })
 
 resumesRouter.delete('/:id', (req: Request, res: Response) => {

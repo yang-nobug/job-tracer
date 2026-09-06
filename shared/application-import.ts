@@ -2,7 +2,7 @@ export const IMPORT_LIMITS = { images: 9, imageBytes: 10 * 1024 * 1024, totalByt
 export const IMPORT_STATUSES = ['unsent', 'applied', 'assessment', 'testing', 'ai', 'round1', 'round2', 'round3', 'hr', 'offer'] as const
 export const IMPORT_FIELDS = ['company', 'position', 'location', 'channel', 'jd_link', 'jd_text', 'contact_name', 'contact_info', 'summary', 'status'] as const
 export type ImportField = typeof IMPORT_FIELDS[number]
-export const IMPORT_LABELS: Record<ImportField, string> = { company: '公司', position: '职位', location: '地点', channel: '渠道', jd_link: '投递链接', jd_text: 'JD 正文', contact_name: '联系人', contact_info: '联系方式', summary: '岗位摘要', status: '状态' }
+export const IMPORT_LABELS: Record<ImportField, string> = { company: '公司', position: '职位', location: '地点', channel: '渠道', jd_link: 'JD 链接', jd_text: 'JD 正文', contact_name: '联系人', contact_info: '联系方式', summary: '岗位摘要', status: '状态' }
 export interface Evidence { source_id: string; quote: string }
 export interface ExtractedField {
   value: string | null

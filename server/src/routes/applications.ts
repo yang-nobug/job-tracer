@@ -17,6 +17,7 @@ interface AppBody {
   location?: string | null
   resume_id?: number | null
   jd_link?: string | null
+  application_link?: string | null
   jd_text?: string | null
   contact_name?: string | null
   contact_info?: string | null
@@ -37,7 +38,7 @@ function addStatusEvent(appId: number, from: Status, to: Status, eventDate = tod
 /** 校验并规范化请求体，返回错误消息或规范化的字段 */
 function validate(body: AppBody): { error?: string; values?: Record<string, unknown> } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: '表单格式不正确' }
-  for (const key of ['company', 'position', 'status', 'applied_at', 'applied_time', 'channel', 'location', 'jd_link', 'jd_text', 'contact_name', 'contact_info', 'notes'] as const) {
+  for (const key of ['company', 'position', 'status', 'applied_at', 'applied_time', 'channel', 'location', 'jd_link', 'application_link', 'jd_text', 'contact_name', 'contact_info', 'notes'] as const) {
     if (body[key] != null && typeof body[key] !== 'string') return { error: `${key} 必须为文本` }
   }
   const company = (body.company ?? '').trim()
@@ -54,9 +55,10 @@ function validate(body: AppBody): { error?: string; values?: Record<string, unkn
   if (applied_at && !isCalendarDate(applied_at)) return { error: '投递日期不是有效的日历日期' }
   if (applied_time && (!applied_at || !isClockTime(applied_time))) return { error: '投递时刻须为 HH:mm 或 HH:mm:ss，且必须有投递日期' }
   if (status === 'unsent' && (applied_at || applied_time)) return { error: '材料包含投递时间，请核对状态；若确实未投递，请清除日期' }
-  if (body.jd_link) {
-    try { if (!['http:', 'https:'].includes(new URL(body.jd_link).protocol)) throw new Error() }
-    catch { return { error: '投递链接必须是完整的 http/https 地址' } }
+  for (const [key, label] of [['jd_link', 'JD 链接'], ['application_link', '投递进度链接']] as const) {
+    if (!body[key]) continue
+    try { if (!['http:', 'https:'].includes(new URL(body[key]!).protocol)) throw new Error() }
+    catch { return { error: `${label}必须是完整的 http/https 地址` } }
   }
 
   return {
@@ -70,6 +72,7 @@ function validate(body: AppBody): { error?: string; values?: Record<string, unkn
       location: body.location?.trim() || null,
       resume_id: body.resume_id ?? null,
       jd_link: body.jd_link?.trim() || null,
+      application_link: body.application_link?.trim() || null,
       jd_text: body.jd_text || null,
       contact_name: body.contact_name?.trim() || null,
       contact_info: body.contact_info?.trim() || null,
@@ -171,9 +174,9 @@ applicationsRouter.post('/', (req: Request, res: Response) => {
     const result = db
     .prepare(
       `INSERT INTO applications (company, position, status, applied_at, applied_time, channel, location, resume_id,
-                                 jd_link, jd_text, contact_name, contact_info, notes, created_at, updated_at)
+                                 jd_link, application_link, jd_text, contact_name, contact_info, notes, created_at, updated_at)
        VALUES (@company, @position, @status, @applied_at, @applied_time, @channel, @location, @resume_id,
-               @jd_link, @jd_text, @contact_name, @contact_info, @notes, @ts, @ts)`
+               @jd_link, @application_link, @jd_text, @contact_name, @contact_info, @notes, @ts, @ts)`
     )
     .run({ ...values, ts: now() })
 
@@ -201,7 +204,7 @@ applicationsRouter.put('/:id', (req: Request, res: Response) => {
   }
   db.prepare(
     `UPDATE applications SET company=@company, position=@position, status=@status, applied_at=@applied_at, applied_time=@applied_time,
-       channel=@channel, location=@location, resume_id=@resume_id, jd_link=@jd_link, jd_text=@jd_text,
+       channel=@channel, location=@location, resume_id=@resume_id, jd_link=@jd_link, application_link=@application_link, jd_text=@jd_text,
        contact_name=@contact_name, contact_info=@contact_info, notes=@notes, updated_at=@ts
      WHERE id=@id`
   ).run({ ...values, ts: now(), id: app.id })

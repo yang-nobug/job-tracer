@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { decryptSecret, encryptSecret } from './mail-credential-store.js'
-import { MailConnectionError, normalizeAuthorizationCode, normalizeEmail } from './mail-client.js'
+import { MailConnectionError, normalizeAuthorizationCode, normalizeEmail, normalizeMailProvider } from './mail-client.js'
 import { classifyRecruitmentEnvelope } from './mail-candidate.js'
 import { validateMailRecruitmentExtraction, type MailRecruitmentExtraction } from './mail-extraction-contracts.js'
 import { extractBodyUrls, htmlToVisibleText } from './mail-content.js'
@@ -31,19 +31,34 @@ test('邮箱授权码密文绑定账号，不能换账号解密', () => {
 
 test('邮箱输入会规范化，并拒绝空白授权码和非法地址', () => {
   assert.equal(normalizeEmail('  Example@QQ.COM '), 'example@qq.com')
+  assert.equal(normalizeEmail('  Name@163.COM ', '163'), 'name@163.com')
+  assert.equal(normalizeMailProvider('qq'), 'qq')
+  assert.equal(normalizeMailProvider('163'), '163')
   assert.equal(normalizeAuthorizationCode('  abcdefgh12345678  '), 'abcdefgh12345678')
   assert.throws(() => normalizeEmail('not-an-email'), (error: unknown) =>
     error instanceof MailConnectionError && error.code === 'INVALID_EMAIL')
   assert.throws(() => normalizeAuthorizationCode('code with spaces'), (error: unknown) =>
     error instanceof MailConnectionError && error.code === 'INVALID_AUTHORIZATION_CODE')
+  assert.throws(() => normalizeEmail('name@qq.com', '163'), (error: unknown) =>
+    error instanceof MailConnectionError && error.code === 'EMAIL_PROVIDER_MISMATCH')
+  assert.throws(() => normalizeMailProvider('gmail'), (error: unknown) =>
+    error instanceof MailConnectionError && error.code === 'INVALID_PROVIDER')
 })
 
 test('招聘邮件候选规则优先识别面试、笔试和测评，并压低职位推广', () => {
-  assert.equal(classifyRecruitmentEnvelope('XX 公司一面邀请', '招聘系统').isCandidate, true)
-  assert.equal(classifyRecruitmentEnvelope('在线笔试通知', '校园招聘').isCandidate, true)
-  assert.equal(classifyRecruitmentEnvelope('人才测评请于今晚完成', 'HR').isCandidate, true)
-  assert.equal(classifyRecruitmentEnvelope('每日职位推荐 newsletter', '招聘平台').isCandidate, false)
-  assert.equal(classifyRecruitmentEnvelope('普通账单提醒', 'service@example.com').isCandidate, false)
+  assert.equal(classifyRecruitmentEnvelope('XX 公司一面邀请').isCandidate, true)
+  assert.equal(classifyRecruitmentEnvelope('在线笔试通知').isCandidate, true)
+  assert.equal(classifyRecruitmentEnvelope('人才测评请于今晚完成').isCandidate, true)
+  assert.equal(classifyRecruitmentEnvelope('每日职位推荐 newsletter').isCandidate, false)
+  assert.equal(classifyRecruitmentEnvelope('普通账单提醒').isCandidate, false)
+})
+
+test('转发到 163 的招聘通知不能因发件人被改写而漏掉', () => {
+  const forwarded = classifyRecruitmentEnvelope('转发：请参加中景芯创集成电路（北京）有限公司的在线测评')
+  assert.equal(forwarded.isCandidate, true)
+  assert.equal(forwarded.matchedTerms.includes('测评'), true)
+  // 即使原始邮件来自招聘平台，普通主题也不应仅凭发件人进入候选。
+  assert.equal(classifyRecruitmentEnvelope('普通系统提醒').isCandidate, false)
 })
 
 const sourceText = `邮件主题：XX公司一面邀请

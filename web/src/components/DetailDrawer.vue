@@ -8,7 +8,6 @@ import { avatarColor } from '../utils/avatar'
 import StatusTag from './StatusTag.vue'
 import EventTimeline from './EventTimeline.vue'
 import InterviewPanel from './InterviewPanel.vue'
-import ApplicationMaterials from './ApplicationMaterials.vue'
 
 const props = defineProps<{ appId: number | null }>()
 const emit = defineEmits<(e: 'close') => void>()
@@ -104,84 +103,60 @@ function fmtDate(s: string | null): string {
 </script>
 
 <template>
-  <el-dialog v-model="visible" width="720px" top="6vh" destroy-on-close>
+  <el-dialog v-model="visible" width="780px" top="5vh" class="detail-dialog" destroy-on-close>
     <div v-if="detail" class="detail">
-      <!-- 头部：公司头像 + 名称/职位 + 状态 -->
-      <div class="detail-head">
-        <span class="head-avatar" :style="{ background: avatarColor(detail.company) }">
-          {{ detail.company.slice(0, 1) }}
-        </span>
+      <header class="detail-head">
+        <span class="head-avatar" :style="{ background: avatarColor(detail.company) }">{{ detail.company.slice(0, 1) }}</span>
         <div class="head-info">
-          <div class="head-company">{{ detail.company }}</div>
-          <div class="head-position">{{ detail.position }}</div>
+          <p class="detail-kicker">APPLICATION DETAIL</p>
+          <h2>{{ detail.company }}</h2>
+          <p>{{ detail.position }}</p>
         </div>
         <StatusTag :app="detail" />
-      </div>
+      </header>
 
       <div class="detail-actions">
-        <el-select :model-value="detail.status" style="width: 118px" size="small" @change="changeStatus">
-          <el-option v-for="s in STATUS_LABEL_LIST" :key="s.value" :label="s.label" :value="s.value" />
-        </el-select>
-        <el-button size="small" :type="detail.rejected_at ? 'success' : 'danger'" plain @click="toggleReject">
-          {{ detail.rejected_at ? '撤销挂掉' : '标记挂掉' }}
-        </el-button>
-        <span class="actions-spacer" />
-        <el-button size="small" @click="openEditForm(detail)">编辑</el-button>
-        <el-button size="small" type="danger" plain @click="removeApp">删除</el-button>
-      </div>
-
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="info-label">渠道</span>
-          <span class="info-value">{{ detail.channel || '-' }}</span>
+        <div class="action-group">
+          <span class="action-label">当前状态</span>
+          <el-select :model-value="detail.status" style="width: 118px" size="small" @change="changeStatus">
+            <el-option v-for="s in STATUS_LABEL_LIST" :key="s.value" :label="s.label" :value="s.value" />
+          </el-select>
+          <el-button size="small" :type="detail.rejected_at ? 'success' : 'danger'" text @click="toggleReject">
+            {{ detail.rejected_at ? '恢复投递' : '标记挂掉' }}
+          </el-button>
         </div>
-        <div class="info-item">
-          <span class="info-label">投递日期</span>
-          <span class="info-value">{{ fmtDate(detail.applied_at) }} {{ detail.applied_time || '' }}</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">地点</span>
-          <span class="info-value">{{ detail.location || '-' }}</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">联系人</span>
-          <span class="info-value">{{ detail.contact_name || '-' }}</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">联系方式</span>
-          <span class="info-value">{{ detail.contact_info || '-' }}</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">简历</span>
-          <span class="info-value">
-            <a v-if="detail.resume" :href="`/api/resumes/${detail.resume.id}/file`" target="_blank" class="link">
-              {{ detail.resume.filename }}
-            </a>
-            <span v-else>-</span>
-          </span>
-        </div>
-        <div v-if="detail.jd_link" class="info-item">
-          <span class="info-label">投递链接</span>
-          <span class="info-value">
-            <a :href="detail.jd_link" target="_blank" class="link">{{ detail.jd_link }}</a>
-          </span>
+        <div class="action-group secondary-actions">
+          <el-button size="small" @click="openEditForm(detail)">编辑</el-button>
+          <el-button size="small" type="danger" text @click="removeApp">删除</el-button>
         </div>
       </div>
-      <div v-if="detail.notes" class="notes">{{ detail.notes }}</div>
-      <ApplicationMaterials :imports="detail.materials ?? []" />
 
-      <div v-if="detail.jd_text" class="section">
-        <h4>📄 JD 正文</h4>
+      <section class="meta-card">
+        <div class="info-grid">
+          <div class="info-item"><span class="info-label">渠道</span><span class="info-value">{{ detail.channel || '未填写' }}</span></div>
+          <div class="info-item"><span class="info-label">投递时间</span><span class="info-value">{{ fmtDate(detail.applied_at) }} {{ detail.applied_time || '' }}</span></div>
+          <div class="info-item"><span class="info-label">工作地点</span><span class="info-value">{{ detail.location || '未填写' }}</span></div>
+          <div class="info-item"><span class="info-label">联系人</span><span class="info-value">{{ detail.contact_name || '未填写' }}</span></div>
+          <div class="info-item"><span class="info-label">联系方式</span><span class="info-value">{{ detail.contact_info || '未填写' }}</span></div>
+          <div class="info-item"><span class="info-label">投递简历</span><span class="info-value"><a v-if="detail.resume" :href="`/api/resumes/${detail.resume.id}/file`" target="_blank" rel="noopener noreferrer" class="link">{{ detail.resume.filename }}</a><span v-else>未关联</span></span></div>
+          <div v-if="detail.jd_link" class="info-item wide"><span class="info-label">岗位 JD 链接</span><a :href="detail.jd_link" target="_blank" rel="noopener noreferrer" class="link">打开岗位来源 ↗</a></div>
+          <div v-if="detail.application_link" class="info-item wide"><span class="info-label">投递进度链接</span><a :href="detail.application_link" target="_blank" rel="noopener noreferrer" class="link">查看投递进度 ↗</a></div>
+        </div>
+      </section>
+
+      <section v-if="detail.notes" class="notes"><span>备注</span><p>{{ detail.notes }}</p></section>
+      <details v-if="detail.jd_text" class="section jd-section">
+        <summary><span><b>岗位描述</b><small>点击展开全文</small></span><span class="summary-arrow">⌄</span></summary>
         <pre class="jd-text">{{ detail.jd_text }}</pre>
-      </div>
+      </details>
 
       <section class="section">
-        <h4>📅 面试</h4>
+        <div class="section-title"><div><p>INTERVIEW</p><h3>面试安排</h3></div></div>
         <InterviewPanel :app-id="detail.id" :interviews="detail.interviews" />
       </section>
 
       <section class="section">
-        <h4>🕓 动态时间线</h4>
+        <div class="section-title"><div><p>ACTIVITY</p><h3>动态记录</h3></div></div>
         <EventTimeline :app-id="detail.id" />
       </section>
     </div>
@@ -189,37 +164,69 @@ function fmtDate(s: string | null): string {
 </template>
 
 <style scoped>
-.detail { display: flex; flex-direction: column; gap: 14px; }
+.detail { display: flex; flex-direction: column; gap: 16px; color: var(--jt-ink, #1f2937); }
 .detail-head {
-  display: flex; align-items: center; gap: 12px;
-  padding-bottom: 14px; border-bottom: 1px solid #ebeef5;
+  display: flex; align-items: center; gap: 14px;
+  padding: 3px 0 18px; border-bottom: 1px solid var(--jt-line, #e7e9ee);
 }
 .head-avatar {
-  width: 44px; height: 44px; border-radius: 10px; flex-shrink: 0;
-  color: #fff; font-size: 22px; font-weight: 600;
+  width: 48px; height: 48px; border-radius: 14px; flex-shrink: 0;
+  color: #fff; font-size: 22px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
 }
 .head-info { flex: 1; min-width: 0; }
-.head-company { font-size: 18px; font-weight: 700; color: #1f2637; line-height: 1.3; }
-.head-position { font-size: 13px; color: #6b7385; margin-top: 2px; }
-.detail-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.actions-spacer { flex: 1; }
+.detail-kicker { margin: 0 0 4px; color: var(--jt-primary, #2563eb); font-size: 10px; font-weight: 800; letter-spacing: .1em; }
+.head-info h2 { margin: 0; font-size: 21px; line-height: 1.22; letter-spacing: -.02em; }
+.head-info > p:last-child { margin: 4px 0 0; color: var(--jt-muted, #6b7280); font-size: 13px; }
+.detail-actions { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.action-group { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.action-label { color: var(--jt-muted, #6b7280); font-size: 12px; }
+.secondary-actions { margin-left: auto; }
+.meta-card { border: 1px solid var(--jt-line, #e7e9ee); border-radius: 13px; background: #fff; }
 .info-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px 16px; background: #f7f9fc; border-radius: 10px; padding: 14px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0; overflow: hidden; border-radius: inherit;
 }
-.info-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.info-label { font-size: 12px; color: #9aa2b1; }
-.info-value { font-size: 13px; color: #3c4353; word-break: break-all; }
+.info-item { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 13px 14px; border-right: 1px solid var(--jt-line, #e7e9ee); border-bottom: 1px solid var(--jt-line, #e7e9ee); }
+.info-item:nth-child(3n) { border-right: 0; }
+.info-item:nth-last-child(-n + 3) { border-bottom: 0; }
+.info-item.wide { grid-column: span 3; }
+.info-label { font-size: 11px; color: var(--jt-muted, #6b7280); }
+.info-value { overflow: hidden; color: #374151; font-size: 13px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .notes {
-  background: #fdf8ef; border-radius: 10px; padding: 12px 14px;
-  font-size: 13px; color: #6b5b3e; white-space: pre-wrap;
+  display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px;
+  padding: 13px 14px; border: 1px solid #f3dfb0; border-radius: 11px; background: #fffaf0;
+  color: #5d4b2b; font-size: 13px;
 }
-.section { background: #f7f9fc; border-radius: 10px; padding: 14px; }
-.section h4 { margin: 0 0 10px; font-size: 14px; color: #303133; }
+.notes > span { color: #9a702c; font-size: 12px; font-weight: 700; }
+.notes p { margin: 0; line-height: 1.65; white-space: pre-wrap; }
+.section { padding: 16px; border: 1px solid var(--jt-line, #e7e9ee); border-radius: 13px; background: #fff; }
+.section-title { margin-bottom: 13px; }
+.section-title p { margin: 0 0 4px; color: var(--jt-primary, #2563eb); font-size: 10px; font-weight: 800; letter-spacing: .1em; }
+.section-title h3 { margin: 0; font-size: 16px; }
+.jd-section { padding: 0; }
+.jd-section summary { display: flex; align-items: center; justify-content: space-between; padding: 15px 16px; cursor: pointer; list-style: none; }
+.jd-section summary::-webkit-details-marker { display: none; }
+.jd-section summary b { display: block; font-size: 15px; }
+.jd-section summary small { display: block; margin-top: 4px; color: var(--jt-muted, #6b7280); font-size: 12px; font-weight: 400; }
+.summary-arrow { color: var(--jt-muted, #6b7280); font-size: 19px; transition: transform .18s ease; }
+.jd-section[open] .summary-arrow { transform: rotate(180deg); }
 pre.jd-text {
-  white-space: pre-wrap; word-break: break-all; font-size: 13px; margin: 0;
-  max-height: 260px; overflow: auto; background: #fff; padding: 10px; border-radius: 8px;
+  max-height: 350px; margin: 0; padding: 0 16px 16px; overflow: auto;
+  border-top: 1px solid var(--jt-line, #e7e9ee); color: #374151; font-family: inherit;
+  font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
 }
-.link { color: #409eff; text-decoration: none; word-break: break-all; }
+.link { color: var(--jt-primary, #2563eb); text-decoration: none; word-break: break-all; }
+.link:hover { text-decoration: underline; }
+@media (max-width: 640px) {
+  .detail-head { align-items: flex-start; }
+  .detail-head :deep(.status-tag) { margin-left: auto; }
+  .info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .info-item:nth-child(3n) { border-right: 1px solid var(--jt-line, #e7e9ee); }
+  .info-item:nth-child(2n) { border-right: 0; }
+  .info-item:nth-last-child(-n + 3) { border-bottom: 1px solid var(--jt-line, #e7e9ee); }
+  .info-item:nth-last-child(-n + 2) { border-bottom: 0; }
+  .info-item.wide { grid-column: span 2; }
+  .secondary-actions { margin-left: 0; }
+}
 </style>

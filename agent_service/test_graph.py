@@ -97,6 +97,7 @@ class FakeClient:
                 "summary": "准备 Vue 核心原理",
                 "items": [{
                     "title": "复习 Vue 响应式原理", "category": "knowledge", "priority": "high",
+                    "focus_areas": ["前端基础"],
                     "estimated_minutes": 30, "reason": "岗位要求 Vue", "evidence_refs": ["E1"],
                     "success_criteria": "可以在三分钟内说明 Proxy、依赖收集和触发更新",
                 }],
@@ -134,6 +135,9 @@ class PrepGraphTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.updates[-1]["role_profile"]["must_have_skills"][0]["text"], "Vue")
         self.assertEqual(client.updates[-1]["gap_analysis"]["gaps"][0]["skill"], "Vue")
         self.assertEqual(client.updates[-1]["critic"]["verdict"], "pass")
+        self.assertEqual(client.model_inputs["gap_analysis"]["user_focus"], ["前端基础"])
+        self.assertEqual(client.model_inputs["plan"]["constraints"]["focus"], ["前端基础"])
+        self.assertEqual(client.updates[-1]["plan"]["items"][0]["focus_areas"], ["前端基础"])
         self.assertEqual(len(client.persisted), 0)
 
         completed = await graph.ainvoke(Command(resume={"action": "approve"}), config)

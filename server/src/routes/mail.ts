@@ -2,12 +2,11 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { db, now } from '../db.js'
 import {
-  deleteQqAuthorizationCode, hasQqAuthorizationCode, loadQqAuthorizationCode, storeQqAuthorizationCode
+  deleteMailAuthorizationCode, hasMailAuthorizationCode, loadMailAuthorizationCode, storeMailAuthorizationCode
 } from '../mail-credential-store.js'
 import {
-  fetchQqMessageBody, inspectQqMailbox, MailConnectionError, normalizeAuthorizationCode, normalizeEmail,
-  scanQqMailboxEnvelopes,
-  QQ_IMAP_HOST, QQ_IMAP_MAILBOX, QQ_IMAP_PORT
+  fetchMessageBody, inspectMailbox, mailProviderConfig, MailConnectionError, normalizeAuthorizationCode,
+  normalizeEmail, normalizeMailProvider, scanMailboxEnvelopes, type MailProvider
 } from '../mail-client.js'
 import { classifyRecruitmentEnvelope } from '../mail-candidate.js'
 import { analyzeRecruitmentMail, mailAnalysisError } from '../mail-recruitment-analysis.js'
@@ -116,18 +115,24 @@ export function recoverInterruptedMailAnalyses(): number {
   return recovered
 }
 
-const selectQqAccount = db.prepare(`SELECT id, provider, email, host, port, secure, mailbox,
+const selectMailAccount = db.prepare(`SELECT id, provider, email, host, port, secure, mailbox,
   credential_ref, status, last_tested_at, last_error_code, created_at, updated_at
-  FROM mail_accounts WHERE provider = 'qq' LIMIT 1`)
+  FROM mail_accounts WHERE provider IN ('qq', '163') ORDER BY updated_at DESC, id DESC LIMIT 1`)
 
-function getQqAccount(): MailAccountRow | undefined {
-  return selectQqAccount.get() as MailAccountRow | undefined
+function getMailAccount(): MailAccountRow | undefined {
+  return selectMailAccount.get() as MailAccountRow | undefined
+}
+
+function accountProvider(account: MailAccountRow): MailProvider {
+  return normalizeMailProvider(account.provider)
 }
 
 function publicAccount(row: MailAccountRow) {
+  const provider = accountProvider(row)
   return {
     id: row.id,
-    provider: 'QQ邮箱',
+    provider,
+    providerLabel: mailProviderConfig(provider).label,
     email: row.email,
     host: row.host,
     port: row.port,
@@ -136,7 +141,7 @@ function publicAccount(row: MailAccountRow) {
     status: row.status,
     lastTestedAt: row.last_tested_at,
     lastErrorCode: row.last_error_code,
-    credentialAvailable: hasQqAuthorizationCode(row.credential_ref)
+    credentialAvailable: hasMailAuthorizationCode(provider, row.credential_ref)
   }
 }
 
@@ -372,23 +377,25 @@ function listCandidates(accountId: number, limit = 100) {
 export const mailRouter = Router()
 
 mailRouter.get('/mail/account', (_req: Request, res: Response) => {
-  const account = getQqAccount()
+  const account = getMailAccount()
   res.json({ configured: Boolean(account), account: account ? publicAccount(account) : null })
 })
 
 mailRouter.post('/mail/account/test', async (req: Request, res: Response) => {
-  const saved = getQqAccount()
+  const saved = getMailAccount()
   const suppliedCode = typeof req.body?.authorizationCode === 'string' && req.body.authorizationCode.trim().length > 0
   try {
+    const provider = normalizeMailProvider(req.body?.provider ?? saved?.provider ?? 'qq')
+    const providerConfig = mailProviderConfig(provider)
     const email = suppliedCode
-      ? normalizeEmail(req.body?.email)
+      ? normalizeEmail(req.body?.email, provider)
       : saved
         ? saved.email
-        : normalizeEmail(req.body?.email)
+        : normalizeEmail(req.body?.email, provider)
     if (!suppliedCode && !saved) {
-      throw new MailConnectionError('请填写 QQ 邮箱地址和授权码', 'CREDENTIAL_REQUIRED')
+      throw new MailConnectionError(`请填写 ${providerConfig.label}地址和授权码`, 'CREDENTIAL_REQUIRED')
     }
-    if (!suppliedCode && req.body?.email && normalizeEmail(req.body.email) !== saved?.email.toLowerCase()) {
+    if (!suppliedCode && (!saved || accountProvider(saved) !== provider || (req.body?.email && normalizeEmail(req.body.email, provider) !== saved.email.toLowerCase()))) {
       throw new MailConnectionError('邮箱地址发生变化时，需要重新填写授权码', 'CREDENTIAL_REQUIRED')
     }
 
@@ -397,27 +404,28 @@ mailRouter.post('/mail/account/test', async (req: Request, res: Response) => {
       authorizationCode = normalizeAuthorizationCode(req.body.authorizationCode)
     } else {
       try {
-        authorizationCode = loadQqAuthorizationCode(saved!.credential_ref, saved!.email)
+        authorizationCode = loadMailAuthorizationCode(provider, saved!.credential_ref, saved!.email)
       } catch (error) {
         throw new MailConnectionError((error as Error).message, 'CREDENTIAL_UNAVAILABLE')
       }
     }
-    const inspection = await inspectQqMailbox(email, authorizationCode)
+    const inspection = await inspectMailbox(provider, email, authorizationCode)
     const testedAt = now()
 
     let credentialRef = saved?.credential_ref
-    if (suppliedCode) credentialRef = storeQqAuthorizationCode(email, authorizationCode)
+    if (suppliedCode) credentialRef = storeMailAuthorizationCode(provider, email, authorizationCode)
     if (!credentialRef) throw new Error('邮箱授权码保存失败')
 
-    // 更换邮箱时删除旧账号行，让同步游标、候选邮件和扫描历史通过外键级联清理。
-    if (saved && saved.email.toLowerCase() !== email) {
+    // 当前只维护一个邮箱账户；切换邮箱或服务商时级联清理旧同步数据，避免候选邮件混用。
+    if (saved && (saved.email.toLowerCase() !== email || accountProvider(saved) !== provider)) {
       db.prepare('DELETE FROM mail_accounts WHERE id = ?').run(saved.id)
+      if (accountProvider(saved) !== provider) deleteMailAuthorizationCode(accountProvider(saved), saved.credential_ref)
     }
 
     db.prepare(`INSERT INTO mail_accounts (
       provider, email, host, port, secure, mailbox, credential_ref, status,
       last_tested_at, last_error_code, created_at, updated_at
-    ) VALUES ('qq', ?, ?, ?, 1, ?, ?, 'connected', ?, NULL, ?, ?)
+    ) VALUES (?, ?, ?, ?, 1, ?, ?, 'connected', ?, NULL, ?, ?)
     ON CONFLICT(provider) DO UPDATE SET
       email = excluded.email,
       host = excluded.host,
@@ -429,10 +437,10 @@ mailRouter.post('/mail/account/test', async (req: Request, res: Response) => {
       last_tested_at = excluded.last_tested_at,
       last_error_code = NULL,
       updated_at = excluded.updated_at`).run(
-      email, QQ_IMAP_HOST, QQ_IMAP_PORT, QQ_IMAP_MAILBOX, credentialRef, testedAt, testedAt, testedAt
+      provider, email, providerConfig.host, providerConfig.port, providerConfig.mailbox, credentialRef, testedAt, testedAt, testedAt
     )
 
-    const account = getQqAccount()!
+    const account = getMailAccount()!
     res.json({
       configured: true,
       account: publicAccount(account),
@@ -450,7 +458,7 @@ mailRouter.post('/mail/account/test', async (req: Request, res: Response) => {
 })
 
 mailRouter.get('/mail/candidates', (req: Request, res: Response) => {
-  const account = getQqAccount()
+  const account = getMailAccount()
   if (!account) {
     res.json([])
     return
@@ -495,9 +503,9 @@ mailRouter.patch('/schedule/:id/status', (req: Request, res: Response) => {
 })
 
 mailRouter.post('/mail/scan', async (req: Request, res: Response) => {
-  const account = getQqAccount()
+  const account = getMailAccount()
   if (!account) {
-    res.status(422).json({ message: '请先连接 QQ 邮箱', code: 'MAIL_NOT_CONFIGURED' })
+    res.status(422).json({ message: '请先连接邮箱', code: 'MAIL_NOT_CONFIGURED' })
     return
   }
   if (scanningAccounts.has(account.id)) {
@@ -505,6 +513,9 @@ mailRouter.post('/mail/scan', async (req: Request, res: Response) => {
     return
   }
   scanningAccounts.add(account.id)
+  // 手动扫描用于让用户立即看到当前收件箱的候选，规则升级或此前忽略的邮件也能重新判断；
+  // 定时自动化不带此参数，继续只按 UID 增量读取，避免反复处理旧邮件。
+  const forceRecentRescan = req.query.rescan === '1'
   const startedAt = now()
   const operation = createOperationRun({ operationType: 'mail_scan', triggerType: req.get('x-automation-run') === '1' ? 'scheduled' : 'manual',
     parentEntityType: 'mail_account', parentEntityId: account.id, inputSummary: { mailbox: account.mailbox } })
@@ -516,16 +527,17 @@ mailRouter.post('/mail/scan', async (req: Request, res: Response) => {
   try {
     let authorizationCode: string
     try {
-      authorizationCode = loadQqAuthorizationCode(account.credential_ref, account.email)
+      authorizationCode = loadMailAuthorizationCode(accountProvider(account), account.credential_ref, account.email)
     } catch (error) {
       throw new MailConnectionError((error as Error).message, 'CREDENTIAL_UNAVAILABLE')
     }
     const state = db.prepare(`SELECT uid_validity, last_uid FROM mail_sync_state
       WHERE account_id = ? AND mailbox = ?`).get(account.id, account.mailbox) as MailSyncStateRow | undefined
-    const batch = await scanQqMailboxEnvelopes(
+    const batch = await scanMailboxEnvelopes(
+      accountProvider(account),
       account.email,
       authorizationCode,
-      state ? { uidValidity: state.uid_validity, lastUid: state.last_uid } : null
+      !forceRecentRescan && state ? { uidValidity: state.uid_validity, lastUid: state.last_uid } : null
     )
     finishOperationStep(scanStep, { status: 'succeeded', outputSummary: { scanned_count: batch.scanned.length, has_more: batch.hasMore } })
 
@@ -533,7 +545,7 @@ mailRouter.post('/mail/scan', async (req: Request, res: Response) => {
     let newCandidateCount = 0
     const finishedAt = now()
     db.transaction(() => {
-      if (state && state.uid_validity !== batch.uidValidity) {
+      if (!forceRecentRescan && state && state.uid_validity !== batch.uidValidity) {
         db.prepare('DELETE FROM mail_candidates WHERE account_id = ? AND mailbox = ?')
           .run(account.id, account.mailbox)
       }
@@ -546,7 +558,7 @@ mailRouter.post('/mail/scan', async (req: Request, res: Response) => {
         WHERE account_id = ? AND mailbox = ? AND uid_validity = ? AND uid = ?`)
 
       for (const message of batch.scanned) {
-        const classification = classifyRecruitmentEnvelope(message.subject, message.from)
+        const classification = classifyRecruitmentEnvelope(message.subject)
         if (!classification.isCandidate) continue
         candidateCount++
         const termsJson = JSON.stringify(classification.matchedTerms)
@@ -613,7 +625,7 @@ mailRouter.post('/mail/candidates/:id/analyze', async (req: Request, res: Respon
     res.status(422).json({ message: '候选邮件编号无效', code: 'INVALID_CANDIDATE_ID' })
     return
   }
-  const account = getQqAccount()
+  const account = getMailAccount()
   const candidate = db.prepare(`${CANDIDATE_SELECT} WHERE c.id = ? AND c.status = 'candidate'`)
     .get(candidateId) as MailCandidateRow | undefined
   if (!account || !candidate || candidate.account_id !== account.id) {
@@ -643,11 +655,12 @@ mailRouter.post('/mail/candidates/:id/analyze', async (req: Request, res: Respon
   try {
     let authorizationCode: string
     try {
-      authorizationCode = loadQqAuthorizationCode(account.credential_ref, account.email)
+      authorizationCode = loadMailAuthorizationCode(accountProvider(account), account.credential_ref, account.email)
     } catch (error) {
       throw new MailConnectionError((error as Error).message, 'CREDENTIAL_UNAVAILABLE')
     }
-    const body = await fetchQqMessageBody(
+    const body = await fetchMessageBody(
+      accountProvider(account),
       account.email, authorizationCode, candidate.uid_validity, candidate.uid
     )
     finishOperationStep(fetchStep, { status: 'succeeded', outputSummary: { body_characters: body.plainText.length + body.html.length, message_size: body.messageSize, truncated: body.truncated } })
@@ -762,10 +775,10 @@ mailRouter.patch('/mail/candidates/:id', (req: Request, res: Response) => {
 })
 
 mailRouter.delete('/mail/account', (_req: Request, res: Response) => {
-  const account = getQqAccount()
+  const account = getMailAccount()
   if (account) {
     db.prepare('DELETE FROM mail_accounts WHERE id = ?').run(account.id)
-    deleteQqAuthorizationCode(account.credential_ref)
+    deleteMailAuthorizationCode(accountProvider(account), account.credential_ref)
   }
   db.prepare(`UPDATE mail_automation_settings SET enabled = 0, last_status = 'idle',
     last_error_code = NULL, last_error_message = NULL, updated_at = ? WHERE id = 1`).run(now())

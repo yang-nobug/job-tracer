@@ -57,5 +57,8 @@ watch([scope, status, channel, keyword], () => {
 </template>
 
 <style scoped>
-.filter-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.filter-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filter-bar :deep(.el-input__wrapper), .filter-bar :deep(.el-select__wrapper) { box-shadow: 0 0 0 1px #e4eaf2 inset; background: #fbfcfe; }
+.filter-bar :deep(.el-radio-button__inner) { border-color: #e4eaf2; box-shadow: none; color: #6c7788; font-weight: 550; }
+.filter-bar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) { background: #edf3ff; border-color: #cbdcff; box-shadow: -1px 0 0 0 #cbdcff; color: #2f6fed; }
 </style>

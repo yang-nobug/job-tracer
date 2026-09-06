@@ -45,6 +45,8 @@ export interface PrepPlanItem {
   title: string
   category: 'knowledge' | 'project' | 'coding' | 'communication' | 'mock'
   priority: 'high' | 'medium' | 'low'
+  /** 本任务实际覆盖的用户指定重点方向；用于验证重点没有在编排中丢失。 */
+  focus_areas: string[]
   estimated_minutes: number
   reason: string
   evidence_refs: PrepEvidenceRef[]
@@ -63,6 +65,7 @@ export type PrepCriticIssueCode =
   | 'VAGUE_ACTION'
   | 'MISSING_SUCCESS_CRITERIA'
   | 'ROLE_REQUIREMENT_NOT_COVERED'
+  | 'USER_FOCUS_NOT_COVERED'
   | 'PRIVACY_LEAK'
 
 export interface PrepCriticResult {
@@ -139,11 +142,12 @@ export const PREP_GAP_ANALYSIS_SCHEMA = {
 
 export const PREP_PLAN_ITEM_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['title', 'category', 'priority', 'estimated_minutes', 'reason', 'evidence_refs', 'success_criteria'],
+  required: ['title', 'category', 'priority', 'focus_areas', 'estimated_minutes', 'reason', 'evidence_refs', 'success_criteria'],
   properties: {
     title: { type: 'string' },
     category: { type: 'string', enum: ['knowledge', 'project', 'coding', 'communication', 'mock'] },
     priority: { type: 'string', enum: ['high', 'medium', 'low'] },
+    focus_areas: { type: 'array', items: { type: 'string' }, maxItems: 8 },
     estimated_minutes: { type: 'integer', minimum: 5, maximum: 480 },
     reason: { type: 'string' },
     evidence_refs: { type: 'array', items: { type: 'string' } },
@@ -172,7 +176,7 @@ export const PREP_CRITIC_SCHEMA = {
           code: { type: 'string', enum: [
             'INVALID_REFERENCE', 'UNSUPPORTED_CLAIM', 'DUPLICATED_ITEM', 'VAGUE_ACTION',
             'MISSING_SUCCESS_CRITERIA',
-            'ROLE_REQUIREMENT_NOT_COVERED', 'PRIVACY_LEAK'
+            'ROLE_REQUIREMENT_NOT_COVERED', 'USER_FOCUS_NOT_COVERED', 'PRIVACY_LEAK'
           ] },
           item_index: { type: ['integer', 'null'] },
           message: { type: 'string' }
@@ -293,6 +297,8 @@ export function validatePrepPlanItem(value: unknown, name = 'plan_item'): PrepPl
     title: text(item.title, `${name}.title`, 160),
     category: oneOf(item.category, ['knowledge', 'project', 'coding', 'communication', 'mock'] as const, `${name}.category`),
     priority: oneOf(item.priority, ['high', 'medium', 'low'] as const, `${name}.priority`),
+    // 旧计划没有这个字段时保留为空，方便用户打开历史记录；新模型输出由 Schema 强制提供。
+    focus_areas: optionalTexts(item.focus_areas, `${name}.focus_areas`, 8, 80),
     estimated_minutes: estimated,
     reason: text(item.reason, `${name}.reason`, 600),
     evidence_refs: optionalTexts(item.evidence_refs, `${name}.evidence_refs`, 15, 60),
@@ -318,7 +324,7 @@ export function validatePrepCritic(value: unknown): PrepCriticResult {
   const codes = [
     'INVALID_REFERENCE', 'UNSUPPORTED_CLAIM', 'DUPLICATED_ITEM', 'VAGUE_ACTION',
     'MISSING_SUCCESS_CRITERIA',
-    'ROLE_REQUIREMENT_NOT_COVERED', 'PRIVACY_LEAK'
+    'ROLE_REQUIREMENT_NOT_COVERED', 'USER_FOCUS_NOT_COVERED', 'PRIVACY_LEAK'
   ] as const
   const issues = raw.issues.map((value, index) => {
     const item = record(value, `issues[${index}]`)

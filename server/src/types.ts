@@ -58,6 +58,7 @@ export interface Application {
   location: string | null
   resume_id: number | null
   jd_link: string | null
+  application_link: string | null
   jd_text: string | null
   contact_name: string | null
   contact_info: string | null
@@ -79,6 +80,11 @@ export interface Resume {
   extraction_error?: string | null
   extracted_at?: string | null
   text_available?: 0 | 1 | boolean
+  extraction_method?: 'vision_pdf' | 'docx_xml' | null
+  extraction_model?: string | null
+  page_count?: number | null
+  pages_completed?: number
+  started_at?: string | null
 }
 
 export interface AppEvent {

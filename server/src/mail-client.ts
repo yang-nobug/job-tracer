@@ -2,9 +2,36 @@ import {
   ImapFlow, type FetchMessageObject, type MailboxObject, type MessageStructureObject
 } from 'imapflow'
 
-export const QQ_IMAP_HOST = 'imap.qq.com'
-export const QQ_IMAP_PORT = 993
-export const QQ_IMAP_MAILBOX = 'INBOX'
+export const MAIL_PROVIDERS = {
+  qq: {
+    id: 'qq',
+    label: 'QQ 邮箱',
+    host: 'imap.qq.com',
+    port: 993,
+    mailbox: 'INBOX',
+    domains: ['qq.com']
+  },
+  '163': {
+    id: '163',
+    label: '163 邮箱',
+    host: 'imap.163.com',
+    port: 993,
+    mailbox: 'INBOX',
+    domains: ['163.com']
+  }
+} as const
+
+export type MailProvider = keyof typeof MAIL_PROVIDERS
+export type MailProviderConfig = (typeof MAIL_PROVIDERS)[MailProvider]
+
+export function normalizeMailProvider(value: unknown): MailProvider {
+  if (value === 'qq' || value === '163') return value
+  throw new MailConnectionError('请选择 QQ 邮箱或 163 邮箱', 'INVALID_PROVIDER')
+}
+
+export function mailProviderConfig(provider: MailProvider): MailProviderConfig {
+  return MAIL_PROVIDERS[provider]
+}
 
 export interface MailPreview {
   uid: number
@@ -42,10 +69,13 @@ export class MailConnectionError extends Error {
   }
 }
 
-export function normalizeEmail(value: unknown): string {
+export function normalizeEmail(value: unknown, provider?: MailProvider): string {
   const email = typeof value === 'string' ? value.trim().toLowerCase() : ''
   if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new MailConnectionError('请输入完整的邮箱地址，例如 123456@qq.com', 'INVALID_EMAIL')
+    throw new MailConnectionError('请输入完整的邮箱地址', 'INVALID_EMAIL')
+  }
+  if (provider && !mailProviderConfig(provider).domains.some(domain => email.endsWith(`@${domain}`))) {
+    throw new MailConnectionError(`请选择与 ${mailProviderConfig(provider).label} 匹配的邮箱地址`, 'EMAIL_PROVIDER_MISMATCH')
   }
   return email
 }
@@ -53,7 +83,7 @@ export function normalizeEmail(value: unknown): string {
 export function normalizeAuthorizationCode(value: unknown): string {
   const code = typeof value === 'string' ? value.trim() : ''
   if (code.length < 8 || code.length > 128 || /[\s\u0000-\u001f\u007f]/.test(code)) {
-    throw new MailConnectionError('授权码格式不正确，请重新复制 QQ 邮箱生成的授权码', 'INVALID_AUTHORIZATION_CODE')
+    throw new MailConnectionError('授权码格式不正确，请重新复制邮箱生成的授权码', 'INVALID_AUTHORIZATION_CODE')
   }
   return code
 }
@@ -81,34 +111,36 @@ function safeIsoDate(value: Date | string | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
-function mapConnectionError(error: unknown): MailConnectionError {
+function mapConnectionError(provider: MailProvider, error: unknown): MailConnectionError {
   if (error instanceof MailConnectionError) return error
+  const label = mailProviderConfig(provider).label
   const detail = error as NodeJS.ErrnoException & {
     authenticationFailed?: boolean
     serverResponseCode?: string
   }
   if (detail.authenticationFailed || detail.serverResponseCode === 'AUTHENTICATIONFAILED') {
     return new MailConnectionError(
-      'QQ 邮箱拒绝登录。请确认已开启 IMAP/SMTP，并使用授权码而不是 QQ 密码',
+      `${label}拒绝登录。请确认已开启 IMAP/SMTP，并使用授权码而不是邮箱密码`,
       'AUTHENTICATION_FAILED'
     )
   }
   if (['CONNECT_TIMEOUT', 'ETIMEDOUT', 'ESOCKETTIMEDOUT'].includes(detail.code ?? '')) {
-    return new MailConnectionError('连接 QQ 邮箱超时，请检查网络后重试', 'CONNECTION_TIMEOUT')
+    return new MailConnectionError(`连接${label}超时，请检查网络后重试`, 'CONNECTION_TIMEOUT')
   }
   if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'ECONNRESET'].includes(detail.code ?? '')) {
-    return new MailConnectionError('无法连接 QQ 邮箱服务器，请检查网络后重试', 'NETWORK_ERROR')
+    return new MailConnectionError(`无法连接${label}服务器，请检查网络后重试`, 'NETWORK_ERROR')
   }
   if ((detail.code ?? '').startsWith('CERT_') || ['DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'].includes(detail.code ?? '')) {
-    return new MailConnectionError('QQ 邮箱的 TLS 证书校验失败，请检查系统时间和网络代理', 'TLS_ERROR')
+    return new MailConnectionError(`${label}的 TLS 证书校验失败，请检查系统时间和网络代理`, 'TLS_ERROR')
   }
-  return new MailConnectionError('QQ 邮箱连接失败，请稍后重试；授权码不会记录到日志', 'IMAP_ERROR')
+  return new MailConnectionError(`${label}连接失败，请稍后重试；授权码不会记录到日志`, 'IMAP_ERROR')
 }
 
-function createQqClient(email: string, authorizationCode: string): ImapFlow {
+function createMailClient(provider: MailProvider, email: string, authorizationCode: string): ImapFlow {
+  const config = mailProviderConfig(provider)
   const client = new ImapFlow({
-    host: QQ_IMAP_HOST,
-    port: QQ_IMAP_PORT,
+    host: config.host,
+    port: config.port,
     secure: true,
     auth: { user: email, pass: authorizationCode },
     disableAutoIdle: true,
@@ -127,14 +159,15 @@ function createQqClient(email: string, authorizationCode: string): ImapFlow {
 }
 
 async function withReadOnlyInbox<T>(
+  provider: MailProvider,
   email: string,
   authorizationCode: string,
   operation: (client: ImapFlow, mailbox: MailboxObject) => Promise<T>
 ): Promise<T> {
-  const client = createQqClient(email, authorizationCode)
+  const client = createMailClient(provider, email, authorizationCode)
   try {
     await client.connect()
-    const lock = await client.getMailboxLock(QQ_IMAP_MAILBOX, { readOnly: true, acquireTimeout: 10_000 })
+    const lock = await client.getMailboxLock(mailProviderConfig(provider).mailbox, { readOnly: true, acquireTimeout: 10_000 })
     try {
       if (!client.mailbox || client.mailbox.readOnly !== true) {
         throw new MailConnectionError('邮箱服务器未确认只读模式，已停止读取', 'READ_ONLY_NOT_CONFIRMED')
@@ -144,7 +177,7 @@ async function withReadOnlyInbox<T>(
       lock.release()
     }
   } catch (error) {
-    throw mapConnectionError(error)
+    throw mapConnectionError(provider, error)
   } finally {
     if (client.usable) {
       try { await client.logout() } catch { client.close() }
@@ -171,12 +204,13 @@ const ENVELOPE_QUERY = {
   flags: true
 } as const
 
-export async function inspectQqMailbox(
+export async function inspectMailbox(
+  provider: MailProvider,
   email: string,
   authorizationCode: string,
   previewLimit = 5
 ): Promise<MailboxInspection> {
-  return withReadOnlyInbox(email, authorizationCode, async (client, mailbox) => {
+  return withReadOnlyInbox(provider, email, authorizationCode, async (client, mailbox) => {
       const messageCount = mailbox.exists
       const recent: MailPreview[] = []
       const limit = Math.min(10, Math.max(1, Math.floor(previewLimit)))
@@ -195,14 +229,15 @@ export async function inspectQqMailbox(
  * 首次只看最近 initialLimit 封；后续按 UID 每批最多 batchLimit 个，避免一次读取整个大邮箱。
  * 只请求 ENVELOPE/INTERNALDATE/FLAGS，不请求正文、附件或写入命令。
  */
-export async function scanQqMailboxEnvelopes(
+export async function scanMailboxEnvelopes(
+  provider: MailProvider,
   email: string,
   authorizationCode: string,
   state?: { uidValidity: string; lastUid: number } | null,
   initialLimit = 100,
   batchLimit = 500
 ): Promise<MailboxScanBatch> {
-  return withReadOnlyInbox(email, authorizationCode, async (client, mailbox) => {
+  return withReadOnlyInbox(provider, email, authorizationCode, async (client, mailbox) => {
     const uidValidity = String(mailbox.uidValidity)
     const canContinue = state?.uidValidity === uidValidity && Number.isInteger(state.lastUid) && state.lastUid > 0
     const previousUid = canContinue ? state.lastUid : 0
@@ -264,7 +299,8 @@ async function streamText(content: NodeJS.ReadableStream): Promise<string> {
 }
 
 /** 按 UID 只下载正文文本部件；附件部件不会请求，邮箱始终以只读模式打开。 */
-export async function fetchQqMessageBody(
+export async function fetchMessageBody(
+  provider: MailProvider,
   email: string,
   authorizationCode: string,
   uidValidity: string,
@@ -273,7 +309,7 @@ export async function fetchQqMessageBody(
 ): Promise<MailMessageBody> {
   if (!Number.isInteger(uid) || uid <= 0) throw new MailConnectionError('邮件 UID 无效', 'MESSAGE_NOT_FOUND')
   const limit = Math.min(512 * 1024, Math.max(64 * 1024, Math.floor(maxBytesPerPart)))
-  return withReadOnlyInbox(email, authorizationCode, async (client, mailbox) => {
+  return withReadOnlyInbox(provider, email, authorizationCode, async (client, mailbox) => {
     if (String(mailbox.uidValidity) !== uidValidity) {
       throw new MailConnectionError('收件箱已重建，请重新扫描后再分析这封邮件', 'MAILBOX_CHANGED')
     }

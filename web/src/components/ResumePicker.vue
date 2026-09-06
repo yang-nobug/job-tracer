@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import type { Resume } from '../types'
@@ -10,11 +10,41 @@ const props = defineProps<{ reloadTrigger?: number }>()
 const resumes = ref<Resume[]>([])
 const selectedResume = computed(() => resumes.value.find(item => item.id === model.value) ?? null)
 const uploadNote = ref('')
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+
+function stopPolling(): void {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
+}
+
+function resumeStatus(resume: Resume): string {
+  if (resume.extraction_status === 'pending' && resume.started_at) return '等待开始提取…'
+  if (resume.extraction_status === 'extracting' && resume.page_count) return `正在识别第 ${resume.pages_completed || 0}/${resume.page_count} 页…`
+  if (resume.extraction_status === 'extracting') return '正在提取文字…'
+  return ''
+}
+
+function extractionIsActive(resume: Resume): boolean {
+  return resume.extraction_status === 'extracting' || (resume.extraction_status === 'pending' && Boolean(resume.started_at))
+}
 
 async function load(): Promise<void> {
   try {
     resumes.value = await api.get<Resume[]>('/resumes')
   } catch { /* 忽略 */ }
+}
+
+async function pollUntilFinished(resumeId: number): Promise<void> {
+  stopPolling()
+  const current = resumes.value.find(item => item.id === resumeId)
+  if (!current || !extractionIsActive(current)) return
+  pollTimer = setTimeout(async () => {
+    await load()
+    const latest = resumes.value.find(item => item.id === resumeId)
+    if (latest?.extraction_status === 'completed') ElMessage.success('简历文字提取完成，可用于 AI 面试准备')
+    else if (latest?.extraction_status === 'failed' || latest?.extraction_status === 'unsupported') ElMessage.warning(latest.extraction_error || '简历文字提取失败')
+    else await pollUntilFinished(resumeId)
+  }, 1_500)
 }
 
 watch(
@@ -29,9 +59,10 @@ async function onUpload(ev: Event): Promise<void> {
   if (!file) return
   try {
     const r = (await api.uploadResume(file, uploadNote.value.trim() || undefined)) as Resume
-    ElMessage.success(r.extraction_status === 'completed' ? '上传并提取简历文本成功' : '上传成功，但简历文本暂未提取')
+    ElMessage.success('简历已上传，正在后台提取文字')
     await load()
     model.value = r.id
+    void pollUntilFinished(r.id)
     uploadNote.value = ''
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -45,8 +76,8 @@ async function extract(): Promise<void> {
   try {
     const result = await api.post<Resume>(`/resumes/${model.value}/extract`)
     await load()
-    if (result.extraction_status === 'completed') ElMessage.success('简历文本提取完成，可用于 AI 面试准备')
-    else ElMessage.warning(result.extraction_error || '未能提取简历文本')
+    ElMessage.info('已开始后台提取，完成后会自动更新')
+    void pollUntilFinished(result.id)
   } catch (error) { ElMessage.error((error as Error).message) }
 }
 
@@ -55,6 +86,8 @@ function preview(): void {
     window.open(`/api/resumes/${model.value}/file`, '_blank')
   }
 }
+
+onBeforeUnmount(stopPolling)
 </script>
 
 <template>
@@ -68,9 +101,10 @@ function preview(): void {
       <input type="file" accept=".pdf,.doc,.docx" @change="onUpload" />
     </label>
     <el-button v-if="model" link type="primary" @click="preview">预览</el-button>
-    <el-button v-if="selectedResume && selectedResume.extraction_status !== 'completed'" link type="warning" @click="extract">提取文字</el-button>
-    <el-tag v-else-if="selectedResume" size="small" type="success">可用于 AI 准备</el-tag>
+    <el-button v-if="selectedResume && !extractionIsActive(selectedResume) && selectedResume.extraction_status !== 'completed'" link type="warning" @click="extract">{{ selectedResume.extraction_status === 'failed' || selectedResume.extraction_status === 'unsupported' ? '重新提取' : '提取文字' }}</el-button>
+    <el-tag v-else-if="selectedResume?.extraction_status === 'completed'" size="small" type="success">可用于 AI 准备</el-tag>
   </div>
+  <div v-if="selectedResume && extractionIsActive(selectedResume)" class="extracting-status">{{ resumeStatus(selectedResume) }}</div>
   <div v-if="selectedResume?.extraction_error" class="extract-error">{{ selectedResume.extraction_error }}</div>
 </template>
 
@@ -84,4 +118,5 @@ function preview(): void {
 .upload-btn:hover { color: #409eff; border-color: #c6e2ff; }
 .upload-btn input { display: none; }
 .extract-error { width:100%; color:#e6a23c; font-size:12px; margin-top:4px; }
+.extracting-status { width:100%; color:#409eff; font-size:12px; margin-top:4px; }
 </style>

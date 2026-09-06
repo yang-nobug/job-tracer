@@ -20,7 +20,7 @@ async function load(): Promise<void> {
 
 watch(() => props.appId, () => load(), { immediate: true })
 
-const TYPE_ICONS: Record<string, string> = { note: '💬', status: '🔄', interview: '📅', other: '📌' }
+const TYPE_LABELS: Record<string, string> = { note: '记录', status: '状态', interview: '面试', other: '其他' }
 
 async function addEvent(): Promise<void> {
   if (!newContent.value.trim() || !props.appId) return
@@ -61,9 +61,9 @@ async function removeEvent(id: number): Promise<void> {
 
     <div v-else class="event-list">
       <div v-for="e in events" :key="e.id" class="event-item">
-        <span class="event-icon">{{ TYPE_ICONS[e.type] || '📌' }}</span>
+        <span class="event-marker" />
         <div class="event-body">
-          <div class="event-date">{{ e.event_date }}</div>
+          <div class="event-meta"><span>{{ TYPE_LABELS[e.type] || '记录' }}</span><time>{{ e.event_date }}</time></div>
           <div class="event-content">{{ e.content }}</div>
         </div>
         <el-button link type="danger" size="small" @click="removeEvent(e.id)">删除</el-button>
@@ -73,15 +73,17 @@ async function removeEvent(id: number): Promise<void> {
 </template>
 
 <style scoped>
-.add-event { display: flex; gap: 8px; margin-bottom: 14px; }
-.event-list { display: flex; flex-direction: column; gap: 4px; }
+.add-event { display: flex; gap: 8px; margin-bottom: 16px; }
+.event-list { display: flex; flex-direction: column; gap: 0; }
 .event-item {
-  display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px;
-  border-radius: 6px; background: #f8f9fb;
+  position: relative; display: flex; align-items: flex-start; gap: 11px; padding: 11px 10px 11px 0;
+  border-bottom: 1px solid var(--jt-line, #e7e9ee);
 }
-.event-item:hover { background: #ecf5ff; }
-.event-icon { font-size: 15px; }
+.event-item:last-child { border-bottom: 0; }
+.event-item:hover { background: #fafcff; }
+.event-marker { width: 8px; height: 8px; flex: 0 0 auto; margin: 5px 0 0 6px; border: 2px solid #fff; border-radius: 50%; background: var(--jt-primary, #2563eb); box-shadow: 0 0 0 1px #a9c8ff; }
 .event-body { flex: 1; min-width: 0; }
-.event-date { font-size: 12px; color: #909399; }
-.event-content { font-size: 14px; white-space: pre-wrap; word-break: break-all; }
+.event-meta { display: flex; align-items: center; gap: 8px; color: var(--jt-muted, #6b7280); font-size: 12px; }
+.event-meta span { color: var(--jt-primary, #2563eb); font-weight: 600; }
+.event-content { margin-top: 4px; color: #374151; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
 </style>

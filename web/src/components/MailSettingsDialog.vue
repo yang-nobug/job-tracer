@@ -6,7 +6,8 @@ import { bumpData } from '../store'
 
 interface MailAccount {
   id: number
-  provider: string
+  provider: MailProvider
+  providerLabel: string
   email: string
   host: string
   port: number
@@ -17,6 +18,13 @@ interface MailAccount {
   lastErrorCode: string | null
   credentialAvailable: boolean
 }
+
+type MailProvider = 'qq' | '163'
+
+const providerOptions: Array<{ value: MailProvider; label: string; example: string; setupUrl: string }> = [
+  { value: 'qq', label: 'QQ 邮箱', example: '123456@qq.com', setupUrl: 'https://mail.qq.com/' },
+  { value: '163', label: '163 邮箱', example: 'name@163.com', setupUrl: 'https://mail.163.com/' }
+]
 
 interface AccountResponse {
   configured: boolean
@@ -210,12 +218,14 @@ const loading = ref(false)
 const testing = ref(false)
 const scanning = ref(false)
 const deleting = ref(false)
+const showConnectionForm = ref(false)
 const analyzingCandidateId = ref<number | null>(null)
 const confirmingSchedule = ref(false)
 const updatingScheduleId = ref<number | null>(null)
 const savingAutomation = ref(false)
 const runningAutomation = ref(false)
 const account = ref<MailAccount | null>(null)
+const provider = ref<MailProvider>('qq')
 const email = ref('')
 const authorizationCode = ref('')
 const recent = ref<MailPreview[]>([])
@@ -235,7 +245,9 @@ const scheduleDraft = ref<ScheduleDraft>({
 })
 
 const hasNewCredential = computed(() => authorizationCode.value.trim().length > 0)
-const actionLabel = computed(() => account.value && !hasNewCredential.value ? '重新测试只读连接' : '测试并保存')
+const canReuseCredential = computed(() => account.value?.provider === provider.value)
+const actionLabel = computed(() => canReuseCredential.value && !hasNewCredential.value ? '重新测试只读连接' : '测试并保存')
+const selectedProvider = computed(() => providerOptions.find(item => item.value === provider.value) ?? providerOptions[0])
 const activeScheduleItems = computed(() => scheduleItems.value.filter(item => item.status === 'active'))
 const visibleScheduleItems = computed(() => scheduleStatusFilter.value === 'all'
   ? scheduleItems.value
@@ -482,7 +494,10 @@ async function load(): Promise<void> {
     applications.value = savedApplications
     scheduleItems.value = savedSchedules
     automationSettings.value = savedAutomation
-    if (result.account) email.value = result.account.email
+    if (result.account) {
+      provider.value = result.account.provider
+      email.value = result.account.email
+    }
   } catch (error) {
     ElMessage.error((error as Error).message)
   } finally {
@@ -494,7 +509,8 @@ async function scanMailbox(): Promise<void> {
   if (!account.value) return
   scanning.value = true
   try {
-    const result = await api.post<ScanResponse>('/mail/scan')
+    // 手动点击始终复查近期邮件，便于规则调整后立即看到已有通知；自动扫描仍走增量接口。
+    const result = await api.post<ScanResponse>('/mail/scan?rescan=1')
     candidates.value = result.candidates
     scanResult.value = result
     const extra = result.hasMore ? '，还有新增邮件未处理，可再扫描一次' : ''
@@ -518,21 +534,23 @@ async function ignoreCandidate(candidate: MailCandidate): Promise<void> {
 
 async function testAndSave(): Promise<void> {
   if (!email.value.trim()) {
-    ElMessage.warning('请填写完整的 QQ 邮箱地址')
+    ElMessage.warning(`请填写完整的 ${selectedProvider.value.label}地址`)
     return
   }
-  if (!account.value && !authorizationCode.value.trim()) {
-    ElMessage.warning('请填写 QQ 邮箱生成的授权码')
+  if ((!account.value || !canReuseCredential.value) && !authorizationCode.value.trim()) {
+    ElMessage.warning(`请填写 ${selectedProvider.value.label}生成的授权码`)
     return
   }
   testing.value = true
   try {
     const previousEmail = account.value?.email
     const result = await api.post<TestResponse>('/mail/account/test', {
+      provider: provider.value,
       email: email.value.trim(),
       authorizationCode: authorizationCode.value
     })
     account.value = result.account
+    provider.value = result.account!.provider
     email.value = result.account!.email
     if (previousEmail && previousEmail !== result.account!.email) {
       candidates.value = []
@@ -541,6 +559,7 @@ async function testAndSave(): Promise<void> {
     recent.value = result.recent
     messageCount.value = result.messageCount
     authorizationCode.value = ''
+    showConnectionForm.value = false
     ElMessage.success(`只读连接成功，收件箱共有 ${result.messageCount} 封邮件`)
   } catch (error) {
     ElMessage.error((error as Error).message)
@@ -552,13 +571,14 @@ async function testAndSave(): Promise<void> {
 async function removeConnection(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '删除后，job-tracer 将无法继续读取邮箱；QQ 邮箱中的邮件不会受到影响。',
+      '删除后，job-tracer 将无法继续读取邮箱；邮箱中的邮件不会受到影响。',
       '删除邮箱连接？',
       { type: 'warning', confirmButtonText: '删除连接', cancelButtonText: '取消' }
     )
     deleting.value = true
     await api.delete('/mail/account')
     account.value = null
+    showConnectionForm.value = false
     email.value = ''
     authorizationCode.value = ''
     recent.value = []
@@ -584,6 +604,7 @@ function onClosed(): void {
   messageCount.value = null
   analysisDialogVisible.value = false
   analysisCandidate.value = null
+  showConnectionForm.value = false
 }
 
 watch(() => props.modelValue, open => { if (open) void load() })
@@ -616,7 +637,7 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
 <template>
   <el-dialog
     v-model="visible"
-    title="QQ 邮箱与招聘日程"
+    title="招聘日程"
     width="760px"
     top="6vh"
     append-to-body
@@ -624,17 +645,22 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
     @closed="onClosed"
   >
     <div v-loading="loading" class="mail-settings">
-      <el-alert type="info" :closable="false" show-icon>
-        <template #title>仅连接个人 QQ 邮箱的 IMAP，只读检查收件箱</template>
-        <p class="alert-copy">
-          连接使用 imap.qq.com:993 和 TLS。测试只获取最近邮件的主题、发件人、时间及当前已读状态，不读取正文或附件，也不会修改邮件。
-        </p>
-      </el-alert>
+      <section class="mail-hero">
+        <div>
+          <p class="mail-kicker">MAIL TO SCHEDULE</p>
+          <h2>{{ account ? '邮件里的招聘安排，一处处理' : '连接邮箱，汇总招聘安排' }}</h2>
+          <p>{{ account ? `正在连接 ${account.providerLabel}，扫描候选邮件后自动进入日程。` : '支持 QQ 与 163 邮箱，只读扫描收件箱。' }}</p>
+        </div>
+        <el-tag :type="account?.status === 'connected' && account.credentialAvailable ? 'success' : 'info'" effect="plain">
+          {{ account?.status === 'connected' && account.credentialAvailable ? '邮箱已连接' : '尚未连接' }}
+        </el-tag>
+      </section>
 
       <section v-if="account" class="status-card" :class="account.status">
         <div>
           <div class="status-title">
             <b>{{ account.email }}</b>
+            <el-tag size="small" effect="plain">{{ account.providerLabel }}</el-tag>
             <el-tag :type="account.status === 'connected' && account.credentialAvailable ? 'success' : 'danger'" size="small">
               {{ account.status === 'connected' && account.credentialAvailable ? '已连接' : '需要检查' }}
             </el-tag>
@@ -643,23 +669,23 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
           <p>上次测试：{{ formatTime(account.lastTestedAt) }}</p>
         </div>
         <div class="status-actions">
-          <el-button type="primary" plain :loading="scanning" @click="scanMailbox">扫描近期招聘邮件</el-button>
+          <el-button type="primary" :loading="scanning" @click="scanMailbox">扫描招聘邮件</el-button>
+          <el-button text type="primary" @click="showConnectionForm = !showConnectionForm">重新连接</el-button>
           <el-button text type="danger" :loading="deleting" @click="removeConnection">删除连接</el-button>
         </div>
       </section>
 
-      <section v-if="account && automationSettings" class="mail-automation-card">
-        <div class="automation-heading">
+      <details v-if="account && automationSettings" class="mail-automation-card" :open="automationSettings.enabled">
+        <summary class="automation-heading">
           <div>
-            <h3>自动确认招聘日程</h3>
-            <p>job-tracer 运行期间，每天在设定时间扫描新邮件并识别；只有高置信度且时间证据完整的测评、笔试和面试会自动加入日程。</p>
+            <h3>自动扫描</h3>
+            <p>{{ automationSettings.enabled ? `每日 ${automationSettings.runTime} 扫描新邮件` : '当前未开启' }}</p>
           </div>
-          <el-switch v-model="automationSettings.enabled" active-text="每天自动处理" />
-        </div>
-        <el-alert type="warning" :closable="false" show-icon>
-          <template #title>开启后会自动读取候选邮件正文并发送给已配置的 AI 模型</template>
-          <p class="alert-copy">附件仍不会读取或发送。低置信度、时间未知、Offer 和其他类型不会自动确认，会保留在候选列表等待你核对。每次最多自动识别 10 封，避免异常邮件造成大量模型调用。</p>
-        </el-alert>
+          <el-tag :type="automationSettings.enabled ? 'success' : 'info'" size="small">{{ automationSettings.enabled ? '已开启' : '未开启' }}</el-tag>
+        </summary>
+        <div class="automation-body">
+          <p class="automation-note">仅复核通过且时间明确的测评、笔试和面试会自动加入日程；附件不会读取。</p>
+          <el-switch v-model="automationSettings.enabled" active-text="每天扫描" />
         <div class="automation-controls">
           <el-time-picker
             v-model="automationSettings.runTime"
@@ -683,21 +709,27 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
             {{ automationSettings.lastErrorMessage || '上次自动处理失败' }}
           </el-tag>
         </div>
-      </section>
+        </div>
+      </details>
 
-      <el-form label-position="top" class="connect-form" @submit.prevent="testAndSave">
-        <el-form-item label="QQ 邮箱地址">
+      <el-form v-if="!account || showConnectionForm" label-position="top" class="connect-form" @submit.prevent="testAndSave">
+        <el-form-item label="邮箱类型">
+          <el-radio-group v-model="provider" :disabled="testing">
+            <el-radio-button v-for="item in providerOptions" :key="item.value" :value="item.value">{{ item.label }}</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="`${selectedProvider.label}地址`">
           <el-input
             v-model="email"
             maxlength="254"
             autocomplete="username"
-            placeholder="例如 123456@qq.com"
+            :placeholder="`例如 ${selectedProvider.example}`"
           />
         </el-form-item>
         <el-form-item>
           <template #label>
-            <span>QQ 邮箱授权码</span>
-            <span v-if="account" class="optional-hint">留空会使用本机已保存的授权码</span>
+            <span>{{ selectedProvider.label }}授权码</span>
+            <span v-if="canReuseCredential" class="optional-hint">留空会使用本机已保存的授权码</span>
           </template>
           <el-input
             v-model="authorizationCode"
@@ -705,12 +737,12 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
             show-password
             maxlength="128"
             autocomplete="new-password"
-            placeholder="不是 QQ 登录密码，也不要发到聊天或提交到 Git"
+            placeholder="不是邮箱登录密码，也不要发到聊天或提交到 Git"
             @keyup.enter="testAndSave"
           />
         </el-form-item>
         <div class="form-actions">
-          <el-link href="https://mail.qq.com/" target="_blank" type="primary">打开 QQ 邮箱设置</el-link>
+          <el-link :href="selectedProvider.setupUrl" target="_blank" rel="noopener noreferrer" type="primary">打开邮箱设置</el-link>
           <el-button type="primary" :loading="testing" @click="testAndSave">{{ actionLabel }}</el-button>
         </div>
       </el-form>
@@ -719,7 +751,7 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
         <div class="preview-heading">
           <div>
             <h3>招聘邮件候选</h3>
-            <p>扫描只使用主题和发件人做宽松粗筛，候选中可能有无关邮件。手动识别或开启每日自动处理后，AI 会先提取招聘事件，再独立复核它是否真的是合理、可执行的招聘日程。</p>
+            <p>点击识别后，系统读取邮件正文并复核是否应加入日程。</p>
           </div>
           <div v-if="scanResult" class="scan-tags">
             <el-tag type="info">本次检查 {{ scanResult.scannedCount }}</el-tag>
@@ -733,12 +765,6 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
           title="新增邮件超过单批上限，请再次点击“扫描近期招聘邮件”继续。"
           class="more-alert"
         />
-        <el-alert type="warning" :closable="false" show-icon class="ai-disclosure">
-          <template #title>AI 识别需要发送这封候选邮件的正文文字</template>
-          <p class="alert-copy">
-            识别时，邮件标题、发件人、发送时间、正文文字和正文链接会发送给你配置的火山方舟模型；不会读取或发送附件，也不会在数据库保存邮件正文。AI 会用第二个独立步骤对提取结果和原文做日程合理性复核；只要复核通过，就会自动写入招聘日程。后续发现问题可在日程列表中修改或取消。
-          </p>
-        </el-alert>
         <div v-if="candidates.length" class="candidate-list">
           <article v-for="candidate in candidates" :key="candidate.id" class="candidate-card">
             <div class="candidate-main">
@@ -782,7 +808,7 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
         <div class="preview-heading">
           <div>
             <h3>已确认的招聘日程</h3>
-            <p>这些事项已经进入顶部“近期日程”；时间未知或灵活安排的事项保留在此处，不进入倒计时。</p>
+            <p>进行中的事项会同步显示在顶部提醒中。</p>
           </div>
           <el-radio-group v-model="scheduleStatusFilter" size="small">
             <el-radio-button value="active">进行中 {{ activeScheduleItems.length }}</el-radio-button>
@@ -822,14 +848,15 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
         <el-empty v-else :description="`没有${scheduleStatusFilter === 'completed' ? '已完成' : scheduleStatusFilter === 'cancelled' ? '已取消' : '进行中'}的日程`" :image-size="48" />
       </section>
 
-      <section v-if="messageCount !== null" class="preview-section">
-        <div class="preview-heading">
+      <details v-if="messageCount !== null" class="preview-section">
+        <summary class="preview-heading compact-heading">
           <div>
             <h3>连接验证结果</h3>
-            <p>收件箱共 {{ messageCount }} 封；以下是最近 {{ recent.length }} 封的信封信息。</p>
+            <p>收件箱 {{ messageCount }} 封 · 最近 {{ recent.length }} 封邮件</p>
           </div>
-          <el-tag type="success">服务器已确认只读模式</el-tag>
-        </div>
+          <el-tag type="success" size="small">只读连接</el-tag>
+        </summary>
+        <div class="preview-body">
         <el-table v-if="recent.length" :data="recent" size="small" max-height="280">
           <el-table-column label="主题" min-width="230" show-overflow-tooltip>
             <template #default="scope">
@@ -842,12 +869,13 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
           </el-table-column>
         </el-table>
         <el-empty v-else description="收件箱中还没有邮件" :image-size="55" />
-      </section>
+        </div>
+      </details>
 
-      <div class="security-note">
-        <b>授权码如何保存</b>
-        <p>授权码只会发送给本机 job-tracer 后端，再用于登录 QQ IMAP；不会发送给 AI。后端使用本机生成的 AES-256-GCM 密钥加密保存，接口不会返回授权码，日志也不会记录它。</p>
-      </div>
+      <details class="security-note">
+        <summary>授权码与邮件内容如何处理</summary>
+        <p>授权码只会发送给本机 job-tracer 后端，再用于登录对应邮箱的 IMAP；不会发送给 AI。后端使用本机生成的 AES-256-GCM 密钥加密保存，接口不会返回授权码，日志也不会记录它。</p>
+      </details>
     </div>
 
     <el-dialog
@@ -1052,60 +1080,70 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
 </template>
 
 <style scoped>
-.mail-settings { min-height: 240px; }
-.alert-copy { margin: 5px 0 0; color: #606266; font-size: 12px; line-height: 1.65; }
+.mail-settings { min-height: 240px; color: var(--jt-ink, #1f2937); }
+.mail-hero {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
+  padding: 2px 0 17px; border-bottom: 1px solid var(--jt-line, #e7e9ee);
+}
+.mail-kicker { margin: 0 0 6px; color: var(--jt-primary, #2563eb); font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+.mail-hero h2 { margin: 0; font-size: 21px; line-height: 1.3; letter-spacing: -.02em; }
+.mail-hero p { margin: 7px 0 0; color: var(--jt-muted, #6b7280); font-size: 13px; }
 .status-card {
   display: flex; align-items: center; justify-content: space-between; gap: 20px;
-  margin-top: 16px; padding: 13px 15px; border: 1px solid #d9ecff; border-radius: 9px; background: #f4faff;
+  margin-top: 16px; padding: 15px 16px; border: 1px solid #cfe0ff; border-radius: 12px; background: #f5f9ff;
 }
-.status-card.error { border-color: #fde2e2; background: #fef6f6; }
+.status-card.error { border-color: #f8d0d0; background: #fff7f7; }
 .status-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.status-card p { margin: 5px 0 0; color: #909399; font-size: 12px; }
+.status-card p { margin: 5px 0 0; color: var(--jt-muted, #6b7280); font-size: 12px; }
 .status-actions { display: flex; align-items: center; gap: 6px; }
 .status-actions .el-button + .el-button { margin-left: 0; }
-.mail-automation-card { margin-top: 16px; padding: 15px; border: 1px solid #e4e7ed; border-radius: 9px; background: #fafafa; }
-.automation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+.mail-automation-card { margin-top: 12px; padding: 0 15px; border: 1px solid var(--jt-line, #e7e9ee); border-radius: 12px; background: #fff; }
+.mail-automation-card summary { list-style: none; cursor: pointer; }
+.mail-automation-card summary::-webkit-details-marker { display: none; }
+.automation-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 0; }
 .automation-heading h3 { margin: 0; font-size: 15px; }
-.automation-heading p { max-width: 560px; margin: 5px 0 0; color: #606266; font-size: 12px; line-height: 1.6; }
+.automation-heading p { max-width: 560px; margin: 4px 0 0; color: var(--jt-muted, #6b7280); font-size: 12px; line-height: 1.5; }
+.automation-body { padding: 2px 0 14px; border-top: 1px solid var(--jt-line, #e7e9ee); }
+.automation-note { margin: 11px 0 10px; color: var(--jt-muted, #6b7280); font-size: 12px; line-height: 1.55; }
 .automation-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-top: 13px; }
 .automation-controls .el-button + .el-button { margin-left: 0; }
-.automation-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; color: #606266; font-size: 12px; }
+.automation-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; color: var(--jt-muted, #6b7280); font-size: 12px; }
 .connect-form { margin-top: 18px; }
 .connect-form :deep(.el-form-item) { margin-bottom: 15px; }
-.optional-hint { margin-left: 8px; color: #909399; font-size: 12px; font-weight: 400; }
+.optional-hint { margin-left: 8px; color: var(--jt-muted, #6b7280); font-size: 12px; font-weight: 400; }
 .form-actions { display: flex; align-items: center; justify-content: space-between; }
-.preview-section { margin-top: 22px; border-top: 1px solid #ebeef5; padding-top: 18px; }
-.candidate-section { margin-top: 22px; border-top: 1px solid #ebeef5; padding-top: 18px; }
-.schedule-list-section { margin-top: 22px; border-top: 1px solid #ebeef5; padding-top: 18px; }
+.preview-section, .candidate-section, .schedule-list-section { margin-top: 22px; border-top: 1px solid var(--jt-line, #e7e9ee); padding-top: 18px; }
 .preview-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 10px; }
 .preview-heading h3 { margin: 0; font-size: 15px; }
-.preview-heading p { margin: 5px 0 0; color: #909399; font-size: 12px; }
+.preview-heading p { margin: 5px 0 0; color: var(--jt-muted, #6b7280); font-size: 12px; }
+.compact-heading { margin-bottom: 0; cursor: pointer; list-style: none; }
+.compact-heading::-webkit-details-marker { display: none; }
+.preview-body { margin-top: 13px; }
 .unread { color: #303133; font-weight: 700; }
 .scan-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .more-alert { margin-bottom: 10px; }
-.ai-disclosure { margin-bottom: 12px; }
 .candidate-list { display: flex; flex-direction: column; gap: 8px; max-height: 330px; overflow: auto; padding-right: 2px; }
-.candidate-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 11px 13px; border: 1px solid #ebeef5; border-radius: 8px; background: #fff; }
-.candidate-card:hover { border-color: #c6e2ff; background: #f8fbff; }
+.candidate-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 13px; border: 1px solid var(--jt-line, #e7e9ee); border-radius: 10px; background: #fff; }
+.candidate-card:hover { border-color: #b8d0ff; background: #f7faff; }
 .candidate-main { min-width: 0; }
 .candidate-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .candidate-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.candidate-main > p { margin: 5px 0; color: #606266; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.candidate-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #909399; font-size: 12px; }
+.candidate-main > p { margin: 5px 0; color: var(--jt-muted, #6b7280); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.candidate-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: var(--jt-muted, #6b7280); font-size: 12px; }
 .candidate-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .candidate-actions .el-button + .el-button { margin-left: 0; }
 .unread-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #409eff; }
 .confirmed-schedule-list { display: flex; flex-direction: column; gap: 9px; max-height: 330px; overflow: auto; }
-.confirmed-schedule-card { display: flex; align-items: flex-start; gap: 13px; padding: 12px; border: 1px solid #d9ecff; border-radius: 9px; background: #f7fbff; }
-.confirmed-schedule-card.completed, .confirmed-schedule-card.cancelled { border-color: #e4e7ed; background: #f8f9fa; }
+.confirmed-schedule-card { display: flex; align-items: flex-start; gap: 13px; padding: 13px; border: 1px solid #cfe0ff; border-radius: 11px; background: #f7faff; }
+.confirmed-schedule-card.completed, .confirmed-schedule-card.cancelled { border-color: var(--jt-line, #e7e9ee); background: #fafafa; }
 .confirmed-schedule-card.completed .schedule-date-badge, .confirmed-schedule-card.cancelled .schedule-date-badge { background: #909399; }
 .schedule-date-badge { width: 54px; flex: 0 0 auto; padding: 6px 3px; border-radius: 7px; background: #409eff; color: #fff; text-align: center; }
 .schedule-date-badge b { display: block; font-size: 14px; }
 .schedule-date-badge span { display: block; margin-top: 3px; font-size: 11px; opacity: 0.9; }
 .confirmed-schedule-main { flex: 1; min-width: 0; }
 .confirmed-schedule-title { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-.confirmed-schedule-main > p { margin: 5px 0; color: #606266; font-size: 12px; }
-.schedule-time-lines { display: flex; flex-wrap: wrap; gap: 5px 12px; color: #409eff; font-size: 12px; }
+.confirmed-schedule-main > p { margin: 5px 0; color: var(--jt-muted, #6b7280); font-size: 12px; }
+.schedule-time-lines { display: flex; flex-wrap: wrap; gap: 5px 12px; color: var(--jt-primary, #2563eb); font-size: 12px; }
 .schedule-card-actions { display: flex; flex: 0 0 auto; gap: 3px; }
 .schedule-card-actions .el-button + .el-button { margin-left: 0; }
 .analysis-result { color: #303133; }
@@ -1157,11 +1195,11 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
 .analysis-footer { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 18px; color: #909399; font-size: 12px; }
 .analysis-footer > div { display: flex; gap: 8px; }
 .analysis-footer .el-button + .el-button { margin-left: 0; }
-.security-note { margin-top: 20px; padding: 12px 14px; border-radius: 8px; background: #f5f7fa; color: #606266; font-size: 12px; }
-.security-note b { color: #303133; }
-.security-note p { margin: 5px 0 0; line-height: 1.7; }
+.security-note { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--jt-line, #e7e9ee); border-radius: 10px; background: #fafafa; color: var(--jt-muted, #6b7280); font-size: 12px; }
+.security-note summary { cursor: pointer; color: var(--jt-ink, #1f2937); font-weight: 600; }
+.security-note p { margin: 8px 0 0; line-height: 1.7; }
 @media (max-width: 700px) {
-  .status-card, .preview-heading { align-items: flex-start; flex-direction: column; }
+  .mail-hero, .status-card, .preview-heading, .automation-heading { align-items: flex-start; flex-direction: column; }
   .status-actions { align-items: flex-start; flex-direction: column; }
   .form-actions { gap: 12px; align-items: flex-start; flex-direction: column; }
   .candidate-card, .analysis-footer, .match-item, .confirmed-schedule-card { align-items: flex-start; flex-direction: column; }

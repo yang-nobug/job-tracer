@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { db, now, today } from '../db.js'
-import { createReviewFile, readReviewFile, writeReviewFile } from '../review-file.js'
+import { createReviewFile, deleteReviewFile, readReviewFile, writeReviewFile } from '../review-file.js'
 import { STATUS_ORDER, STATUS_LABELS, type Status } from '../types.js'
 
 export const interviewsRouter = Router()
@@ -81,12 +81,26 @@ interviewsRouter.patch('/interviews/:id', (req: Request, res: Response) => {
 })
 
 interviewsRouter.delete('/interviews/:id', (req: Request, res: Response) => {
-  const result = db.prepare('DELETE FROM interviews WHERE id = ?').run(req.params.id)
-  if (result.changes === 0) {
+  const interview = db.prepare('SELECT id, review_file FROM interviews WHERE id = ?').get(req.params.id) as
+    | { id: number; review_file: string | null }
+    | undefined
+  if (!interview) {
     res.status(404).json({ message: '面试不存在' })
     return
   }
-  res.json({ ok: true })
+  db.prepare('DELETE FROM interviews WHERE id = ?').run(interview.id)
+
+  // 历史数据可能因为旧命名规则共用一个复盘文件，仍被引用时绝不能误删。
+  let reviewFileRemoved = false
+  if (interview.review_file) {
+    const remaining = db.prepare('SELECT COUNT(*) AS count FROM interviews WHERE review_file = ?')
+      .get(interview.review_file) as { count: number }
+    if (remaining.count === 0) {
+      try { reviewFileRemoved = deleteReviewFile(interview.review_file) }
+      catch (error) { console.warn(`[reviews] 删除复盘文件失败：${(error as Error).message}`) }
+    }
+  }
+  res.json({ ok: true, review_file_removed: reviewFileRemoved })
 })
 
 // 复盘 md 读写

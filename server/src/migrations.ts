@@ -813,6 +813,36 @@ const migrations: Migration[] = [
         );
       `)
     }
+  },
+  {
+    version: 24,
+    name: 'resume_async_vision_extraction',
+    up(db) {
+      addColumn(db, 'resume_texts', 'extraction_method', 'TEXT')
+      addColumn(db, 'resume_texts', 'model', 'TEXT')
+      addColumn(db, 'resume_texts', 'page_count', 'INTEGER')
+      addColumn(db, 'resume_texts', 'pages_completed', 'INTEGER NOT NULL DEFAULT 0')
+      addColumn(db, 'resume_texts', 'started_at', 'TEXT')
+    }
+  },
+  {
+    version: 25,
+    name: 'application_progress_link',
+    up(db) {
+      // jd_link 保持岗位 JD / 职位来源语义；投递后的查询入口单独保存，避免两者互相覆盖。
+      addColumn(db, 'applications', 'application_link', 'TEXT')
+    }
+  },
+  {
+    version: 26,
+    name: 'split_legacy_links_by_status',
+    up(db) {
+      // 历史只有 jd_link 一个字段：未投递记录保存职位 JD，已投递及后续状态保存进度查询入口。
+      db.prepare(`UPDATE applications
+        SET application_link = jd_link, jd_link = NULL
+        WHERE status <> 'unsent'
+          AND trim(coalesce(jd_link, '')) <> ''`).run()
+    }
   }
 ]
 

@@ -25,6 +25,7 @@ const AI_TASK_INFO: Record<AiTask, { label: string; data: string; visible: boole
   reviewAdvice: { label: '复盘建议', data: '复盘内容、岗位信息和 JD 摘要', visible: true },
   interviewPrepAgent: { label: '面试准备 Agent', data: '岗位信息、面试信息、必要的历史复盘和检索知识', visible: true },
   codeReading: { label: '代码理解 Agent', data: '用户问题与按需读取的受限代码片段', visible: true },
+  resumeExtract: { label: '简历视觉提取', data: 'PDF 简历逐页渲染得到的临时图片；原 PDF 保留在本机，任务完成后删除临时图片', visible: true },
   mailRecruitmentExtract: { label: '招聘邮件识别', data: '候选邮件的主题、发件人、发送时间、正文文字和正文链接（不含附件）', visible: true },
   mailScheduleReview: { label: '招聘日程合理性复核', data: '邮件标题、发件人、发送时间、正文和待复核的结构化事件（不含附件）', visible: true }
 }

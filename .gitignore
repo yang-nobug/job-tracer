@@ -7,3 +7,8 @@ config.json
 .venv-agent/
 __pycache__/
 *.pyc
+
+# 本地学习与规划文档
+LEARNING-QUESTIONS.md
+PLAN.md
+REQUIREMENTS.md

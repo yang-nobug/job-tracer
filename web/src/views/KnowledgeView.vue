@@ -16,6 +16,11 @@ import RichText from '../components/RichText.vue'
 
 const router = useRouter()
 
+function sourceDisplayTitle(source: KnowledgeSource): string {
+  const title = [source.company, source.position, source.round].filter(Boolean).join(' · ')
+  return (source.duplicate_count ?? 1) > 1 ? `${title}（${source.duplicate_index ?? 1}）` : title
+}
+
 // ---- 视图状态 ----
 const viewMode = ref<'items' | 'sources'>('items')
 const owner = ref<'all' | 'others' | 'mine'>('all')
@@ -264,13 +269,11 @@ function openSource(sourceId: number | null): void {
         <div v-else class="kb-sources">
           <div v-for="src in sources" :key="src.id" class="kb-source-card" @click="openSource(src.id)">
             <div class="kb-src-row">
-              <span class="kb-src-company">{{ src.company }}</span>
+              <span class="kb-src-company">{{ sourceDisplayTitle(src) }}</span>
               <el-tag v-if="src.owner === 'mine'" type="primary" effect="dark" size="small" round>我的</el-tag>
               <el-tag v-else type="info" effect="plain" size="small" round>他人</el-tag>
-              <el-tag v-if="src.round" size="small" effect="light" round>{{ src.round }}</el-tag>
             </div>
             <div class="kb-src-sub">
-              <span v-if="src.position">{{ src.position }}</span>
               <span v-if="src.note" class="kb-src-note">{{ src.note }}</span>
             </div>
             <div class="kb-src-foot">

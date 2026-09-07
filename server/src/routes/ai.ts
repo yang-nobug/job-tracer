@@ -89,7 +89,7 @@ aiRouter.get('/ai/calls/:id', (req: Request, res: Response) => {
   res.json(row)
 })
 
-// AI JD 解析：提取公司/职位/地点 + 岗位要求摘要
+// AI JD 解析：提取公司/职位/地点、岗位 JD 链接与岗位要求摘要
 aiRouter.post('/ai/jd-parse', async (req: Request, res: Response) => {
   const text = (req.body?.text ?? '').trim()
   if (!text) {
@@ -110,6 +110,7 @@ aiRouter.post('/ai/jd-parse', async (req: Request, res: Response) => {
       company: parsed.company || undefined,
       position: parsed.position || undefined,
       location: parsed.location || undefined,
+      jd_link: parsed.jd_link || undefined,
       summary: parsed.summary || undefined,
       jd: parsed.jd || undefined
     })

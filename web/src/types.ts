@@ -498,6 +498,8 @@ export interface KnowledgeSource {
   /** 列表接口附带 */
   item_count?: number
   image_count?: number
+  duplicate_count?: number
+  duplicate_index?: number
 }
 
 export interface KnowledgeItem {
@@ -514,6 +516,14 @@ export interface KnowledgeItem {
   source_position?: string | null
   source_round?: string | null
   source_owner?: 'others' | 'mine' | null
+}
+
+export interface KnowledgeAnswerVersion {
+  id: number
+  answer: string
+  reason: 'before_manual_edit' | 'before_ai_regenerate' | 'before_restore'
+  model: string | null
+  created_at: string
 }
 
 export interface KnowledgeImage {

@@ -7,6 +7,7 @@ import { db, KNOWLEDGE_IMAGES_DIR, now } from '../db.js'
 import { KNOWLEDGE_CATEGORIES, MASTERY_LEVELS } from '../types.js'
 import { inspectImage } from '../application-materials.js'
 import { searchKnowledge } from '../knowledge-retrieval.js'
+import { snapshotKnowledgeAnswer } from '../knowledge-answer-history.js'
 
 export const knowledgeRouter = Router()
 
@@ -56,6 +57,22 @@ function validCategory(c: unknown): string {
   return typeof c === 'string' && KNOWLEDGE_CATEGORIES.includes(c) ? c : '其他'
 }
 
+function requestedUpdatedAt(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function conflict(res: Response): void {
+  res.status(409).json({ message: '这条题目已被其他操作更新，请刷新后再试', error_type: 'knowledge_item_conflict' })
+}
+
+function markdownQuote(value: string): string {
+  return value.replace(/\r\n?/g, '\n').split('\n').map(line => `> ${line}`).join('\n')
+}
+
+function markdownFilenamePart(value: string): string {
+  return value.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').slice(0, 80) || '未命名'
+}
+
 // ---------- 面经（源） ----------
 
 // 列表（含题目数/截图数）
@@ -73,10 +90,21 @@ knowledgeRouter.get('/sources', (req: Request, res: Response) => {
   }
   const rows = db
     .prepare(
-      `SELECT s.*,
+      `WITH indexed_sources AS (
+        SELECT s.*,
+          COUNT(*) OVER (
+            PARTITION BY s.owner, s.company, COALESCE(s.position, ''), COALESCE(s.round, '')
+          ) AS duplicate_count,
+          ROW_NUMBER() OVER (
+            PARTITION BY s.owner, s.company, COALESCE(s.position, ''), COALESCE(s.round, '')
+            ORDER BY s.id ASC
+          ) AS duplicate_index
+        FROM knowledge_sources s
+      )
+      SELECT s.*,
         (SELECT COUNT(*) FROM knowledge_items WHERE source_id = s.id) AS item_count,
         (SELECT COUNT(*) FROM knowledge_images WHERE source_id = s.id) AS image_count
-       FROM knowledge_sources s ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       FROM indexed_sources s ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY s.created_at DESC`
     )
     .all(params)
@@ -153,6 +181,59 @@ knowledgeRouter.delete('/sources/:id', (req: Request, res: Response) => {
   }
   db.prepare('DELETE FROM knowledge_sources WHERE id = ?').run(src.id)
   res.json({ ok: true })
+})
+
+/** 下载当前面经的可移植 Markdown；截图不内嵌，避免单个 .md 文件膨胀或失效。 */
+knowledgeRouter.get('/sources/:id/export.md', (req: Request, res: Response) => {
+  const source = db.prepare('SELECT * FROM knowledge_sources WHERE id=?').get(req.params.id) as
+    | { id: number; owner: 'mine' | 'others'; company: string; position: string | null; round: string | null; note: string | null; created_at: string }
+    | undefined
+  if (!source) {
+    res.status(404).json({ message: '面经不存在' })
+    return
+  }
+  const items = db.prepare(`SELECT id,question,answer,category,mastery FROM knowledge_items
+    WHERE source_id=? ORDER BY id`).all(source.id) as Array<{ id: number; question: string; answer: string | null; category: string; mastery: number }>
+  const mastery = ['未掌握', '模糊', '已掌握']
+  const title = [source.company, source.position, source.round].filter(Boolean).join(' · ') || source.company
+  const lines = [
+    `# ${title}`,
+    '',
+    `- 面经来源：${source.owner === 'mine' ? '我的面试' : '他人面经'}`,
+    `- 录入时间：${source.created_at.slice(0, 10)}`,
+    `- 题目数量：${items.length}`,
+    ...(source.note ? [`- 备注：${source.note}`] : []),
+    '',
+    '---'
+  ]
+  for (const [index, item] of items.entries()) {
+    lines.push(
+      '',
+      `## ${index + 1}. 问题`,
+      '',
+      markdownQuote(item.question),
+      '',
+      `- 分类：${item.category}`,
+      `- 掌握度：${mastery[item.mastery] ?? '未知'}`,
+      '',
+      '### 参考答案',
+      '',
+      item.answer?.trim() || '> 暂无参考答案'
+    )
+  }
+  // 同公司、岗位、轮次允许录入多份面经；按录入顺序编号，避免导出文件同名。
+  const duplicateIndex = Number(db.prepare(`SELECT COUNT(*) AS count FROM knowledge_sources
+    WHERE owner=? AND company=? AND COALESCE(position, '')=COALESCE(?, '') AND COALESCE(round, '')=COALESCE(?, '') AND id<=?`)
+    .get(source.owner, source.company, source.position, source.round, source.id)?.count ?? 1)
+  const filename = `${[
+    markdownFilenamePart(source.company),
+    source.position ? markdownFilenamePart(source.position) : '',
+    source.round ? markdownFilenamePart(source.round) : '',
+    `面经（${duplicateIndex}）`
+  ].filter(Boolean).join('-')}.md`
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="interview-notes.md"; filename*=UTF-8''${encodeURIComponent(filename)}`)
+  res.send(`${lines.join('\n')}\n`)
 })
 
 // 面经详情：条目 + 截图
@@ -273,25 +354,94 @@ knowledgeRouter.post('/items/batch', (req: Request, res: Response) => {
 
 knowledgeRouter.put('/items/:id', (req: Request, res: Response) => {
   const item = db.prepare('SELECT * FROM knowledge_items WHERE id = ?').get(req.params.id) as
-    | { question: string; answer: string | null; category: string }
+    | { id: number; question: string; answer: string | null; category: string; updated_at: string }
     | undefined
   if (!item) {
     res.status(404).json({ message: '条目不存在' })
     return
   }
-  const question = (req.body?.question ?? item.question).trim()
+  const question = typeof req.body?.question === 'string' ? req.body.question.trim() : item.question
   if (!question) {
     res.status(422).json({ message: '问题不能为空' })
     return
   }
-  db.prepare('UPDATE knowledge_items SET question=?, answer=?, category=?, updated_at=? WHERE id=?').run(
-    question,
-    req.body?.answer !== undefined ? req.body.answer || null : item.answer,
-    validCategory(req.body?.category ?? item.category),
-    now(),
-    req.params.id
-  )
+  if (question.length > 2000) {
+    res.status(422).json({ message: '问题不能超过 2000 字符' })
+    return
+  }
+  const hasAnswer = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'answer')
+  if (hasAnswer && req.body?.answer != null && typeof req.body.answer !== 'string') {
+    res.status(422).json({ message: '答案必须是文字或空值' })
+    return
+  }
+  const answer = hasAnswer ? (typeof req.body?.answer === 'string' ? req.body.answer.trim() || null : null) : item.answer
+  if (answer && answer.length > 20_000) {
+    res.status(422).json({ message: '答案不能超过 20000 字符' })
+    return
+  }
+  const expected = requestedUpdatedAt(req.body?.expected_updated_at)
+  if (expected && expected !== item.updated_at) {
+    conflict(res)
+    return
+  }
+  const timestamp = now()
+  try {
+    db.transaction(() => {
+      if (answer !== item.answer) snapshotKnowledgeAnswer(item.id, item.answer, 'before_manual_edit')
+      const result = db.prepare(`UPDATE knowledge_items SET question=?, answer=?, category=?, updated_at=?
+        WHERE id=?${expected ? ' AND updated_at=?' : ''}`).run(
+        question, answer, validCategory(req.body?.category ?? item.category), timestamp, item.id, ...(expected ? [expected] : [])
+      )
+      if (!result.changes) throw new Error('knowledge_item_conflict')
+    })()
+  } catch (error) {
+    if ((error as Error).message === 'knowledge_item_conflict') return conflict(res)
+    throw error
+  }
   res.json(db.prepare('SELECT * FROM knowledge_items WHERE id = ?').get(req.params.id))
+})
+
+knowledgeRouter.get('/items/:id/answer-versions', (req: Request, res: Response) => {
+  const itemId = Number(req.params.id)
+  if (!itemId || !db.prepare('SELECT id FROM knowledge_items WHERE id=?').get(itemId)) {
+    res.status(404).json({ message: '题目不存在' })
+    return
+  }
+  const rows = db.prepare(`SELECT id,answer,reason,model,created_at FROM knowledge_answer_versions
+    WHERE knowledge_item_id=? ORDER BY id DESC LIMIT 30`).all(itemId)
+  res.json(rows)
+})
+
+knowledgeRouter.post('/items/:id/answer-versions/:versionId/restore', (req: Request, res: Response) => {
+  const itemId = Number(req.params.id)
+  const versionId = Number(req.params.versionId)
+  const item = db.prepare('SELECT id,answer,updated_at FROM knowledge_items WHERE id=?').get(itemId) as
+    | { id: number; answer: string | null; updated_at: string }
+    | undefined
+  const version = db.prepare(`SELECT answer FROM knowledge_answer_versions
+    WHERE id=? AND knowledge_item_id=?`).get(versionId, itemId) as { answer: string } | undefined
+  if (!item || !version) {
+    res.status(404).json({ message: '题目或答案版本不存在' })
+    return
+  }
+  const expected = requestedUpdatedAt(req.body?.expected_updated_at)
+  if (expected && expected !== item.updated_at) {
+    conflict(res)
+    return
+  }
+  const timestamp = now()
+  try {
+    db.transaction(() => {
+      if (version.answer !== item.answer) snapshotKnowledgeAnswer(item.id, item.answer, 'before_restore')
+      const result = db.prepare(`UPDATE knowledge_items SET answer=?, updated_at=?
+        WHERE id=?${expected ? ' AND updated_at=?' : ''}`).run(version.answer, timestamp, item.id, ...(expected ? [expected] : []))
+      if (!result.changes) throw new Error('knowledge_item_conflict')
+    })()
+  } catch (error) {
+    if ((error as Error).message === 'knowledge_item_conflict') return conflict(res)
+    throw error
+  }
+  res.json(db.prepare('SELECT * FROM knowledge_items WHERE id=?').get(itemId))
 })
 
 knowledgeRouter.patch('/items/:id/mastery', (req: Request, res: Response) => {

@@ -3,10 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
-import { store, askTutor } from '../store'
+import { store, askTutor, bumpKnowledge } from '../store'
 import {
   MASTERY_LABELS,
   MASTERY_TAG_TYPES,
+  KNOWLEDGE_CATEGORIES,
+  type KnowledgeAnswerVersion,
+  type KnowledgeItem,
   type KnowledgeSourceDetail,
   type Mastery
 } from '../types'
@@ -24,6 +27,15 @@ const genProgress = ref<{ done: number; total: number } | null>(null)
 const expanded = ref<Set<number>>(new Set())
 const previewVisible = ref(false)
 const previewUrl = ref('')
+const editingItemId = ref<number | null>(null)
+const editDraft = ref<{ question: string; answer: string; category: string; updatedAt: string } | null>(null)
+const savingItem = ref(false)
+const regeneratingItemId = ref<number | null>(null)
+const versionsVisible = ref(false)
+const versionItem = ref<KnowledgeItem | null>(null)
+const answerVersions = ref<KnowledgeAnswerVersion[]>([])
+const versionsLoading = ref(false)
+const restoringVersionId = ref<number | null>(null)
 
 const unanswered = computed(() => (detail.value?.items ?? []).filter((i) => !i.answer || !i.answer.trim()))
 
@@ -45,6 +57,149 @@ function toggleExpand(id: number): void {
   if (next.has(id)) next.delete(id)
   else next.add(id)
   expanded.value = next
+}
+
+function expandItem(id: number): void {
+  if (expanded.value.has(id)) return
+  expanded.value = new Set([...expanded.value, id])
+}
+
+function replaceItem(updated: KnowledgeItem): void {
+  const item = detail.value?.items.find(entry => entry.id === updated.id)
+  if (item) Object.assign(item, updated)
+}
+
+function editItem(item: KnowledgeItem): void {
+  expandItem(item.id)
+  editingItemId.value = item.id
+  editDraft.value = {
+    question: item.question,
+    answer: item.answer ?? '',
+    category: item.category,
+    updatedAt: item.updated_at
+  }
+}
+
+function cancelEdit(): void {
+  editingItemId.value = null
+  editDraft.value = null
+}
+
+async function saveItem(item: KnowledgeItem): Promise<void> {
+  if (!editDraft.value) return
+  if (!editDraft.value.question.trim()) {
+    ElMessage.warning('问题不能为空')
+    return
+  }
+  savingItem.value = true
+  try {
+    const updated = await api.put<KnowledgeItem>(`/knowledge/items/${item.id}`, {
+      question: editDraft.value.question,
+      answer: editDraft.value.answer,
+      category: editDraft.value.category,
+      expected_updated_at: editDraft.value.updatedAt
+    })
+    replaceItem(updated)
+    cancelEdit()
+    bumpKnowledge()
+    ElMessage.success('题目已保存')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    savingItem.value = false
+  }
+}
+
+async function regenerateAnswer(item: KnowledgeItem): Promise<void> {
+  try {
+    const message = item.answer?.trim()
+      ? '将生成新答案并替换当前内容；当前答案会自动保留到历史版本，可随时恢复。'
+      : '将为这道题生成参考答案。'
+    await ElMessageBox.confirm(message, '重新生成答案', {
+      type: 'warning', confirmButtonText: '重新生成', cancelButtonText: '取消'
+    })
+    regeneratingItemId.value = item.id
+    const result = await api.post<{ items: KnowledgeItem[] }>('/ai/knowledge/generate-answers', {
+      ids: [item.id],
+      mode: 'replace',
+      expected_updated_at: { [item.id]: item.updated_at }
+    })
+    const updated = result.items.find(entry => entry.id === item.id)
+    if (updated) replaceItem(updated)
+    expandItem(item.id)
+    bumpKnowledge()
+    ElMessage.success('答案已重新生成')
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error((err as Error).message)
+  } finally {
+    regeneratingItemId.value = null
+  }
+}
+
+const versionReasonLabel: Record<KnowledgeAnswerVersion['reason'], string> = {
+  before_manual_edit: '编辑前备份',
+  before_ai_regenerate: 'AI 重新生成前',
+  before_restore: '恢复前备份'
+}
+
+async function loadAnswerVersions(item: KnowledgeItem): Promise<void> {
+  versionItem.value = item
+  versionsVisible.value = true
+  versionsLoading.value = true
+  try {
+    answerVersions.value = await api.get<KnowledgeAnswerVersion[]>(`/knowledge/items/${item.id}/answer-versions`)
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+async function restoreAnswerVersion(version: KnowledgeAnswerVersion): Promise<void> {
+  if (!versionItem.value) return
+  try {
+    await ElMessageBox.confirm('恢复后当前答案会自动保存为一个历史版本。', '恢复历史答案', {
+      type: 'warning', confirmButtonText: '恢复此版本', cancelButtonText: '取消'
+    })
+    restoringVersionId.value = version.id
+    const updated = await api.post<KnowledgeItem>(
+      `/knowledge/items/${versionItem.value.id}/answer-versions/${version.id}/restore`,
+      { expected_updated_at: versionItem.value.updated_at }
+    )
+    replaceItem(updated)
+    versionItem.value = updated
+    await loadAnswerVersions(updated)
+    expandItem(updated.id)
+    bumpKnowledge()
+    ElMessage.success('已恢复历史答案')
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error((err as Error).message)
+  } finally {
+    restoringVersionId.value = null
+  }
+}
+
+async function exportMarkdown(): Promise<void> {
+  if (!detail.value) return
+  try {
+    const response = await fetch(`/api/knowledge/sources/${detail.value.id}/export.md`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { message?: string }
+      throw new Error(body.message || '导出失败')
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${detail.value.company}-面经.md`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    ElMessage.success('Markdown 已下载')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
 }
 
 async function setMastery(itemId: number, mastery: Mastery): Promise<void> {
@@ -214,6 +369,7 @@ async function removeItem(itemId: number): Promise<void> {
         >
           {{ genProgress ? `生成中 ${genProgress.done}/${genProgress.total}…` : `✨ 生成答案（${unanswered.length}）` }}
         </el-button>
+        <el-button plain size="small" @click="exportMarkdown">导出 Markdown</el-button>
         <el-button type="danger" plain size="small" @click="removeSource">删除</el-button>
       </div>
 
@@ -244,12 +400,24 @@ async function removeItem(itemId: number): Promise<void> {
             </span>
             <el-tag v-if="!item.answer" size="small" type="info" effect="plain" round>无答案</el-tag>
             <el-button size="small" link title="把这道题带进 AI 助教" @click.stop="askTutor(item.question)">🎓 助教</el-button>
+            <el-button size="small" link @click.stop="editItem(item)">编辑</el-button>
+            <el-button size="small" link type="primary" :loading="regeneratingItemId === item.id" @click.stop="regenerateAnswer(item)">重新生成</el-button>
+            <el-button v-if="item.answer" size="small" link @click.stop="loadAnswerVersions(item)">历史</el-button>
             <el-button link type="danger" size="small" @click.stop="removeItem(item.id)">删</el-button>
             <span class="src-toggle">{{ expanded.has(item.id) ? '▲' : '▼' }}</span>
           </div>
           <div v-if="expanded.has(item.id)" class="src-answer">
-            <RichText v-if="item.answer" :content="item.answer" />
-            <div v-else class="src-noanswer">还没有答案，点上方「AI 生成答案」补齐</div>
+            <template v-if="editingItemId === item.id && editDraft">
+              <div class="item-edit-head"><strong>编辑题目与答案</strong><span>答案支持 Markdown</span></div>
+              <el-input v-model="editDraft.question" maxlength="2000" placeholder="问题" />
+              <div class="item-edit-meta"><el-select v-model="editDraft.category" style="width: 120px"><el-option v-for="category in KNOWLEDGE_CATEGORIES" :key="category" :value="category" :label="category" /></el-select></div>
+              <el-input v-model="editDraft.answer" type="textarea" :rows="10" maxlength="20000" show-word-limit placeholder="输入参考答案，支持 Markdown" />
+              <div class="item-edit-actions"><el-button :disabled="savingItem" @click="cancelEdit">取消</el-button><el-button type="primary" :loading="savingItem" @click="saveItem(item)">保存修改</el-button></div>
+            </template>
+            <template v-else>
+              <RichText v-if="item.answer" :content="item.answer" />
+              <div v-else class="src-noanswer">还没有答案，可点击「重新生成」或顶部按钮补齐</div>
+            </template>
           </div>
         </div>
       </div>
@@ -295,6 +463,16 @@ async function removeItem(itemId: number): Promise<void> {
 
   <el-dialog v-model="previewVisible" width="720px" top="4vh" title="截图预览">
     <img :src="previewUrl" style="width: 100%" />
+  </el-dialog>
+
+  <el-dialog v-model="versionsVisible" width="760px" top="8vh" title="答案历史版本" append-to-body>
+    <div v-loading="versionsLoading" class="version-list">
+      <div v-if="!versionsLoading && !answerVersions.length" class="src-noanswer">暂时没有历史版本。编辑或重新生成后会在这里保留旧答案。</div>
+      <article v-for="version in answerVersions" :key="version.id" class="version-card">
+        <div class="version-head"><div><el-tag size="small" effect="plain">{{ versionReasonLabel[version.reason] }}</el-tag><span>{{ version.created_at.replace('T', ' ').slice(0, 16) }}</span></div><el-button type="primary" plain size="small" :loading="restoringVersionId === version.id" @click="restoreAnswerVersion(version)">恢复此版本</el-button></div>
+        <RichText :content="version.answer" />
+      </article>
+    </div>
   </el-dialog>
 </template>
 
@@ -345,6 +523,8 @@ async function removeItem(itemId: number): Promise<void> {
 
 .src-answer { margin-top: 12px; border-top: 1px dashed #ebeef5; padding-top: 12px; }
 .src-noanswer { color: #909399; font-size: 13px; }
+.item-edit-head { display:flex; justify-content:space-between; gap:12px; margin-bottom:8px; color:#526074; font-size:13px; }.item-edit-head span { color:#9099a7; font-size:12px; }.item-edit-meta { margin:8px 0; }.item-edit-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
+.version-list { min-height:100px; max-height:64vh; overflow:auto; }.version-card { border:1px solid #e7ebf0; border-radius:8px; padding:12px; margin-bottom:10px; background:#fff; }.version-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:9px; }.version-head>div { display:flex; align-items:center; gap:8px; color:#8792a2; font-size:12px; }.version-card :deep(.rich-text) { max-height:260px; overflow:auto; }
 /* 截图画廊（默认收起） */
 .src-gallery { margin-top: 28px; }
 .src-gallery-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

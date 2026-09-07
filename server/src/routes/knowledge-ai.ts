@@ -13,6 +13,7 @@ import {
 } from '../ai-contracts.js'
 import { loadPrompt } from '../prompt-loader.js'
 import { searchKnowledge, tutorCitations } from '../knowledge-retrieval.js'
+import { snapshotKnowledgeAnswer } from '../knowledge-answer-history.js'
 
 // 知识库 AI：拆题 / 生成答案 / 助教对话（需求 3.9.2 / 3.9.4）
 
@@ -105,9 +106,13 @@ knowledgeAiRouter.post('/ai/knowledge/extract-image', async (req: Request, res: 
   }
 })
 
-// 批量生成答案并落库；有答案的条目跳过
+// 批量生成答案并落库；missing 只补空答案，replace 仅用于用户明确发起的重新生成。
 knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, res: Response) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : []
+  const mode = req.body?.mode === 'replace' ? 'replace' : 'missing'
+  const expectedUpdatedAt = req.body?.expected_updated_at && typeof req.body.expected_updated_at === 'object' && !Array.isArray(req.body.expected_updated_at)
+    ? req.body.expected_updated_at as Record<string, unknown>
+    : {}
   if (ids.length === 0) {
     res.status(422).json({ message: 'ids 不能为空' })
     return
@@ -118,17 +123,32 @@ knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, re
   }
   const placeholders = ids.map(() => '?').join(',')
   const items = db
-    .prepare(`SELECT id, question, answer FROM knowledge_items WHERE id IN (${placeholders})`)
-    .all(...ids) as { id: number; question: string; answer: string | null }[]
-  // 只给没有答案的生成
-  const todo = items.filter(i => !i.answer || !i.answer.trim())
+    .prepare(`SELECT i.id,i.question,i.answer,i.category,i.updated_at,
+      COALESCE(s.company,'') AS company,COALESCE(s.position,'') AS position,COALESCE(s.round,'') AS round
+      FROM knowledge_items i LEFT JOIN knowledge_sources s ON s.id=i.source_id
+      WHERE i.id IN (${placeholders})`)
+    .all(...ids) as Array<{
+      id: number; question: string; answer: string | null; category: string; updated_at: string
+      company: string; position: string; round: string
+    }>
+  const todo = mode === 'replace' ? items : items.filter(i => !i.answer || !i.answer.trim())
   if (todo.length === 0) {
-    res.json({ items, generated: 0 })
+    res.json({ items: [], generated: 0, mode })
     return
   }
+  for (const item of todo) {
+    const expected = expectedUpdatedAt[String(item.id)]
+    if (expected !== undefined && (typeof expected !== 'string' || expected !== item.updated_at)) {
+      res.status(409).json({ message: '这条题目已被其他操作更新，请刷新后再重新生成', error_type: 'knowledge_item_conflict' })
+      return
+    }
+  }
   try {
-    const questionList = todo.map(i => ({ id: i.id, question: i.question }))
-    const { value } = await completeStructured(
+    const questionList = todo.map(i => ({
+      id: i.id, question: i.question, category: i.category,
+      source: { company: i.company || null, position: i.position || null, round: i.round || null }
+    }))
+    const { value, completion } = await completeStructured(
       [
         { role: 'system', content: `${loadPrompt('knowledge-answer.system.md')}\n\nJSON Schema:\n${JSON.stringify(ANSWER_GENERATION_SCHEMA)}` },
         { role: 'user', content: `<untrusted_questions>\n${JSON.stringify(questionList)}\n</untrusted_questions>` }
@@ -141,19 +161,30 @@ knowledgeAiRouter.post('/ai/knowledge/generate-answers', async (req: Request, re
       }
     )
     const byId = new Map(value.answers.map(answer => [answer.id, answer.answer]))
-    const update = db.prepare('UPDATE knowledge_items SET answer=?, updated_at=? WHERE id=?')
+    const update = db.prepare('UPDATE knowledge_items SET answer=?, updated_at=? WHERE id=? AND updated_at=?')
     const ts = now()
     const tx = db.transaction(() => {
       for (const item of todo) {
         const answer = byId.get(item.id)
-        if (answer) update.run(answer, ts, item.id)
+        if (!answer || answer === item.answer) continue
+        if (mode === 'replace') snapshotKnowledgeAnswer(item.id, item.answer, 'before_ai_regenerate', completion.model)
+        const result = update.run(answer, ts, item.id, item.updated_at)
+        if (!result.changes) throw new Error('knowledge_item_conflict')
       }
     })
-    tx()
+    try {
+      tx()
+    } catch (error) {
+      if ((error as Error).message === 'knowledge_item_conflict') {
+        res.status(409).json({ message: '生成期间题目内容已变化，请刷新后再试', error_type: 'knowledge_item_conflict' })
+        return
+      }
+      throw error
+    }
     const refreshed = db
       .prepare(`SELECT id, question, answer, category, mastery FROM knowledge_items WHERE id IN (${placeholders})`)
       .all(...ids)
-    res.json({ items: refreshed, generated: value.answers.length })
+    res.json({ items: refreshed, generated: value.answers.length, mode })
   } catch (err) {
     console.error('[generate-answers]', (err as Error).message)
     res.status(err instanceof AiError ? err.statusCode : 502).json({ message: (err as Error).message })

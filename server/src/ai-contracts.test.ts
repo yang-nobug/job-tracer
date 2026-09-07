@@ -12,18 +12,23 @@ test('JD 合约会清理字符串并拒绝未定义字段', () => {
     company: ' 示例公司 ',
     position: '前端开发',
     location: '',
+    jd_link: ' https://example.com/jobs/1 ',
     summary: 'Vue 方向',
     jd: '岗位职责'
   }), {
     company: '示例公司',
     position: '前端开发',
     location: '',
+    jd_link: 'https://example.com/jobs/1',
     summary: 'Vue 方向',
     jd: '岗位职责'
   })
   assert.throws(() => validateJdParse({
-    company: '', position: '', location: '', summary: '', jd: '', unexpected: true
+    company: '', position: '', location: '', jd_link: '', summary: '', jd: '', unexpected: true
   }), /未定义字段/)
+  assert.throws(() => validateJdParse({
+    company: '', position: '', location: '', jd_link: 'example.com/jobs/1', summary: '', jd: ''
+  }), /完整的 http\/https 地址/)
 })
 
 test('知识拆题合约拒绝非法分类和空题目', () => {

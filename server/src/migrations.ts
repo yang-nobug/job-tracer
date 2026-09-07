@@ -843,6 +843,24 @@ const migrations: Migration[] = [
         WHERE status <> 'unsent'
           AND trim(coalesce(jd_link, '')) <> ''`).run()
     }
+  },
+  {
+    version: 27,
+    name: 'knowledge_answer_versions',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS knowledge_answer_versions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          knowledge_item_id INTEGER NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+          answer TEXT NOT NULL,
+          reason TEXT NOT NULL CHECK(reason IN ('before_manual_edit','before_ai_regenerate','before_restore')),
+          model TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_answer_versions_item
+          ON knowledge_answer_versions(knowledge_item_id, id DESC);
+      `)
+    }
   }
 ]
 

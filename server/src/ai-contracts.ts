@@ -32,6 +32,18 @@ function text(value: unknown, at: string, maxLength: number, required = false): 
   return normalized
 }
 
+function httpUrl(value: unknown, at: string): string {
+  const result = text(value, at, 2_000)
+  if (!result) return ''
+  try {
+    const url = new URL(result)
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error()
+  } catch {
+    throw new Error(`${at} 必须是完整的 http/https 地址`)
+  }
+  return result
+}
+
 function list(value: unknown, at: string, maxItems: number): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${at} 必须是数组`)
   if (value.length > maxItems) throw new Error(`${at} 最多 ${maxItems} 项`)
@@ -44,6 +56,7 @@ export interface JdParseResult {
   company: string
   position: string
   location: string
+  jd_link: string
   summary: string
   jd: string
 }
@@ -52,17 +65,19 @@ export const JD_PARSE_SCHEMA = object({
   company: string(200),
   position: string(200),
   location: string(200),
+  jd_link: string(2_000),
   summary: string(500),
   jd: string(20_000)
 })
 
 export function validateJdParse(value: unknown): JdParseResult {
   const data = record(value, '$')
-  exactKeys(data, ['company', 'position', 'location', 'summary', 'jd'], '$')
+  exactKeys(data, ['company', 'position', 'location', 'jd_link', 'summary', 'jd'], '$')
   return {
     company: text(data.company, '$.company', 200),
     position: text(data.position, '$.position', 200),
     location: text(data.location, '$.location', 200),
+    jd_link: httpUrl(data.jd_link, '$.jd_link'),
     summary: text(data.summary, '$.summary', 500),
     jd: text(data.jd, '$.jd', 20_000)
   }

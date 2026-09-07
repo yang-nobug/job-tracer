@@ -194,37 +194,11 @@ async function save(): Promise<void> {
 // JD 粘贴解析
 const jdDialogOpen = ref(false)
 const jdInput = ref('')
-const parsing = ref(false)
 const aiParsing = ref(false)
 
 function openJdDialog(): void {
   jdInput.value = ''
   jdDialogOpen.value = true
-}
-
-async function parseJd(): Promise<void> {
-  if (!jdInput.value.trim()) {
-    ElMessage.warning('请粘贴 JD 文本')
-    return
-  }
-  parsing.value = true
-  try {
-    const result = await api.post<{ company?: string; position?: string; location?: string }>('/jd-parse', {
-      text: jdInput.value
-    })
-    if (result.company) form.company = result.company
-    if (result.position) form.position = result.position
-    if (result.location) form.location = result.location
-    form.jd_text = jdInput.value
-    jdDialogOpen.value = false
-    ElMessage.success(
-      `已识别${result.company ? '公司' : ''}${result.position ? '、职位' : ''}${result.location ? '、地点' : ''}，请核对`
-    )
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    parsing.value = false
-  }
 }
 
 // AI 解析（火山方舟，需在 config.json 配置）
@@ -239,12 +213,14 @@ async function parseJdAi(): Promise<void> {
       company?: string
       position?: string
       location?: string
+      jd_link?: string
       summary?: string
       jd?: string
     }>('/ai/jd-parse', { text: jdInput.value })
     if (result.company) form.company = result.company
     if (result.position) form.position = result.position
     if (result.location) form.location = result.location
+    if (result.jd_link) form.jd_link = result.jd_link
     // 优先使用 AI 清洗后的 JD 正文，避免把整页复制的导航等垃圾内容存进来
     form.jd_text = result.jd || jdInput.value
     if (result.summary) {
@@ -353,10 +329,9 @@ const channels = computed(() => DEFAULT_CHANNELS)
     </template>
 
     <el-dialog v-model="jdDialogOpen" title="粘贴 JD 解析" width="560px" append-to-body>
-      <el-input v-model="jdInput" type="textarea" :rows="10" placeholder="把招聘 JD 原文粘贴到这里，自动识别公司 / 职位 / 地点" />
+      <el-input v-model="jdInput" type="textarea" :rows="10" placeholder="把招聘 JD 原文粘贴到这里，AI 可识别公司 / 职位 / 地点 / JD 链接" />
       <template #footer>
         <el-button @click="jdDialogOpen = false">取消</el-button>
-        <el-button :loading="parsing" @click="parseJd">本地解析</el-button>
         <el-button type="primary" :loading="aiParsing" @click="parseJdAi">✨ AI 解析</el-button>
       </template>
     </el-dialog>

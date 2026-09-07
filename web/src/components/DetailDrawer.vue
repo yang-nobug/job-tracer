@@ -13,6 +13,7 @@ const props = defineProps<{ appId: number | null }>()
 const emit = defineEmits<(e: 'close') => void>()
 
 const detail = ref<ApplicationDetail | null>(null)
+const sharingToFeishu = ref(false)
 
 async function load(): Promise<void> {
   if (!props.appId) {
@@ -97,6 +98,19 @@ async function removeApp(): Promise<void> {
   }
 }
 
+async function shareToFeishu(): Promise<void> {
+  if (!detail.value || sharingToFeishu.value) return
+  sharingToFeishu.value = true
+  try {
+    await api.post(`/feishu/applications/${detail.value.id}/share`)
+    ElMessage.success('岗位信息已发送到飞书群')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    sharingToFeishu.value = false
+  }
+}
+
 function fmtDate(s: string | null): string {
   return s ? s.slice(0, 10) : '—'
 }
@@ -126,6 +140,9 @@ function fmtDate(s: string | null): string {
           </el-button>
         </div>
         <div class="action-group secondary-actions">
+          <el-tooltip content="发送可复制的岗位信息到已配置的飞书群" placement="top">
+            <el-button size="small" :loading="sharingToFeishu" @click="shareToFeishu">分享到飞书</el-button>
+          </el-tooltip>
           <el-button size="small" @click="openEditForm(detail)">编辑</el-button>
           <el-button size="small" type="danger" text @click="removeApp">删除</el-button>
         </div>

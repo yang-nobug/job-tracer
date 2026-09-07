@@ -13,7 +13,6 @@ import { knowledgeAiRouter } from './routes/knowledge-ai.js'
 import { recoverInterruptedRecordings, recordingsRouter } from './routes/recordings.js'
 import { tutorRouter } from './routes/tutor.js'
 import { aiRouter } from './routes/ai.js'
-import { jdParseHandler } from './jd-parser.js'
 import { applicationImportsRouter } from './routes/application-imports.js'
 import { prepAgentRouter } from './routes/prep-agent.js'
 import { prepTasksRouter } from './routes/prep-tasks.js'
@@ -30,6 +29,7 @@ import { projectsRouter } from './routes/projects.js'
 import { codeReadingRouter } from './routes/code-reading.js'
 import { recoverInterruptedCodeReadingSessions } from './code-reading-agent.js'
 import { logApp, newTraceId, runWithTrace, validTraceId } from './observability.js'
+import { feishuRouter } from './routes/feishu.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const configuredPort = Number(process.env.PORT)
@@ -65,6 +65,7 @@ app.use((req, res, next) => {
 app.use('/api', statsRouter)
 app.use('/api', aiRouter)
 app.use('/api', observabilityRouter)
+app.use('/api/feishu', feishuRouter)
 app.use('/api', projectsRouter)
 app.use('/api', codeReadingRouter)
 app.use('/api', interviewsRouter)
@@ -80,7 +81,6 @@ app.use('/api', prepAgentRouter)
 app.use('/api', prepTasksRouter)
 app.use('/api', mailRouter)
 app.use('/api', mailAutomationRouter)
-app.post('/api/jd-parse', jdParseHandler)
 
 // 统一错误处理（422/500 -> JSON）
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {

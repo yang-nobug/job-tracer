@@ -42,5 +42,8 @@
     "accessKeySecret": "填入阿里云 AccessKeySecret",
     "bucket": "填入私有桶名",
     "region": "如 oss-cn-beijing"
+  },
+  "feishu": {
+    "webhookUrl": "https://open.feishu.cn/open-apis/bot/v2/hook/填入飞书群自定义机器人 Webhook"
   }
 }

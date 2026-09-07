@@ -8,7 +8,17 @@ config.json
 __pycache__/
 *.pyc
 
-# ����ѧϰ��滮�ĵ�
+# 本地学习与规划文档
 LEARNING-QUESTIONS.md
 PLAN.md
 REQUIREMENTS.md
+AI-OPTIMIZATION-PLAN.md
+EVALUATION-EXPANSION-PLAN.md
+LANGGRAPH-INTERVIEW-PREP-AGENT-DESIGN.md
+
+# 本地调试与一次性验证脚本
+test-ai.mjs
+test-api.mjs
+clean-jd.mjs
+server/src/feishu-share.test.ts
+server/src/knowledge-item-lifecycle.test.ts

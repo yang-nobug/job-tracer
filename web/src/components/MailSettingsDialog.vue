@@ -684,7 +684,7 @@ watch(() => scheduleDraft.value.timeMode, timeMode => {
           <el-tag :type="automationSettings.enabled ? 'success' : 'info'" size="small">{{ automationSettings.enabled ? '已开启' : '未开启' }}</el-tag>
         </summary>
         <div class="automation-body">
-          <p class="automation-note">仅复核通过且时间明确的测评、笔试和面试会自动加入日程；附件不会读取。</p>
+          <p class="automation-note">AI 复核通过的招聘流程邮件会自动加入日程；邮件未说明时间时会标记为待确认。附件不会读取。</p>
           <el-switch v-model="automationSettings.enabled" active-text="每天扫描" />
         <div class="automation-controls">
           <el-time-picker

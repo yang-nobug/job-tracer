@@ -41,7 +41,8 @@ const imgUpload = multer({
   limits: { files: 2, fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase()
-    if (file.fieldname === 'inference_file' && ['.jpg', '.jpeg'].includes(ext)) cb(null, true)
+    // 小图会直接作为视觉模型输入，推理副本不一定是 JPEG：需与原图支持范围保持一致。
+    if (file.fieldname === 'inference_file' && ['.jpg', '.jpeg', '.png', '.webp', '.bmp'].includes(ext)) cb(null, true)
     else if (file.fieldname === 'file' && ['.jpg', '.jpeg', '.png', '.webp', '.bmp'].includes(ext)) cb(null, true)
     else cb(new Error('仅支持图片文件（jpg/png/webp/bmp）'))
   }
@@ -495,7 +496,8 @@ knowledgeRouter.post('/images', imgUpload.fields([
   }
   try {
     const inferenceInfo = inspectImage(readFileSync(inference.path))
-    if (inferenceInfo.mime !== 'image/jpeg' || Math.max(inferenceInfo.width, inferenceInfo.height) > 2048) {
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/bmp'].includes(inferenceInfo.mime)
+      || Math.max(inferenceInfo.width, inferenceInfo.height) > 2048) {
       throw new Error('图片推理副本格式或尺寸不正确')
     }
     const result = db

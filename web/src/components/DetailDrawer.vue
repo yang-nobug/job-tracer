@@ -3,7 +3,7 @@ import { ref, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { store, openEditForm, bumpData } from '../store'
-import { STATUS_LABEL_LIST, type ApplicationDetail, type Status } from '../types'
+import { STATUS_LABEL_LIST, STATUS_ORDER, type ApplicationDetail, type Status } from '../types'
 import { avatarColor } from '../utils/avatar'
 import StatusTag from './StatusTag.vue'
 import EventTimeline from './EventTimeline.vue'
@@ -41,6 +41,13 @@ const visible = computed({
 
 async function changeStatus(s: Status): Promise<void> {
   if (!detail.value) return
+  const requiresSchedule = ['assessment', 'testing', 'ai', 'round1', 'round2', 'round3', 'hr'].includes(s)
+    && STATUS_ORDER.indexOf(s) > STATUS_ORDER.indexOf(detail.value.status)
+  if (requiresSchedule) {
+    // 与列表编辑共用表单，必须补齐环节时间后才推进状态。
+    openEditForm({ ...detail.value, status: s })
+    return
+  }
   if (s !== 'unsent' && !detail.value.applied_at) {
     ElMessage.info('请先确认实际投递日期，再保存状态')
     openEditForm({ ...detail.value, status: s })

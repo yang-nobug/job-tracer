@@ -174,7 +174,6 @@ async function executeCycle(): Promise<MailAutomationResult> {
       let candidate = original
       const needsScheduleReview = candidate.analysisStatus === 'succeeded'
         && !candidate.scheduleReview
-        && !candidate.bodyTruncated
         && !candidate.scheduleReviewErrorCode
       if ((candidate.analysisStatus === null || needsScheduleReview) && analyzedCount < MAX_ANALYSES_PER_RUN) {
         analyzedCount++
@@ -191,7 +190,7 @@ async function executeCycle(): Promise<MailAutomationResult> {
           continue
         }
       }
-      if (candidate.analysisStatus !== 'succeeded' || candidate.bodyTruncated || !canAutomaticallyConfirm(candidate.analysis, candidate.scheduleReview)) {
+      if (candidate.analysisStatus !== 'succeeded' || !canAutomaticallyConfirm(candidate.analysis, candidate.scheduleReview)) {
         if (candidate.analysisStatus !== null) reviewCount++
         continue
       }

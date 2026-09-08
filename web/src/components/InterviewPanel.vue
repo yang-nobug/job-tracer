@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { bumpData } from '../store'
@@ -22,7 +22,7 @@ async function addInterview(): Promise<void> {
   adding.value = true
   try {
     await api.post(`/applications/${props.appId}/interviews`, { ...form })
-    ElMessage.success('已添加，复盘文档已自动生成')
+    ElMessage.success('已添加面试安排')
     showForm.value = false
     form.round = '一面'
     form.scheduled_at = ''
@@ -41,6 +41,38 @@ async function toggleDone(iv: Interview): Promise<void> {
     bumpData()
   } catch (err) {
     ElMessage.error((err as Error).message)
+  }
+}
+
+const editingTimeInterview = ref<Interview | null>(null)
+const editedScheduledAt = ref('')
+const savingTime = ref(false)
+const timeEditorVisible = computed({
+  get: () => editingTimeInterview.value !== null,
+  set: value => { if (!value) editingTimeInterview.value = null }
+})
+
+function openTimeEditor(iv: Interview): void {
+  editingTimeInterview.value = iv
+  editedScheduledAt.value = iv.scheduled_at
+}
+
+async function saveInterviewTime(): Promise<void> {
+  const interview = editingTimeInterview.value
+  if (!interview || !editedScheduledAt.value) {
+    ElMessage.warning('请选择面试时间')
+    return
+  }
+  savingTime.value = true
+  try {
+    await api.patch(`/interviews/${interview.id}`, { scheduled_at: editedScheduledAt.value })
+    ElMessage.success('面试时间已更新')
+    editingTimeInterview.value = null
+    bumpData()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    savingTime.value = false
   }
 }
 
@@ -188,7 +220,9 @@ watch(
         <span class="iv-spacer" />
         <el-button v-if="!iv.done" link type="primary" size="small" @click="prepInterview = iv">✨ AI 准备</el-button>
         <span v-else class="completed-hint">面试已完成，建议补充复盘</span>
-        <el-button link size="small" @click="editingInterview = iv">📝 复盘</el-button>
+        <el-button link size="small" @click="openTimeEditor(iv)">修改时间</el-button>
+        <el-button v-if="iv.review_file" link size="small" @click="editingInterview = iv">📝 复盘</el-button>
+        <span v-else class="completed-hint">上传录音后生成复盘</span>
         <el-button link size="small" @click="toggleDone(iv)">{{ iv.done ? '标记未完成' : '标记完成' }}</el-button>
         <el-button link type="danger" size="small" @click="removeInterview(iv)">删除</el-button>
       </div>
@@ -309,6 +343,25 @@ watch(
       @update:model-value="value => { if (!value) prepInterview = null }"
       @completed="bumpData"
     />
+    <el-dialog
+      v-model="timeEditorVisible"
+      title="调整面试时间"
+      width="420px"
+      append-to-body
+      destroy-on-close
+    >
+      <el-date-picker
+        v-model="editedScheduledAt"
+        type="datetime"
+        value-format="YYYY-MM-DD HH:mm"
+        format="YYYY-MM-DD HH:mm"
+        style="width: 100%"
+      />
+      <template #footer>
+        <el-button @click="editingTimeInterview = null">取消</el-button>
+        <el-button type="primary" :loading="savingTime" @click="saveInterviewTime">保存时间</el-button>
+      </template>
+    </el-dialog>
     <PrepTaskWorkspaceDialog
       :model-value="prepTask !== null"
       :task="prepTask"

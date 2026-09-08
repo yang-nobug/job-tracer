@@ -2,6 +2,7 @@
 import type { UpcomingItem } from '../types'
 
 const props = defineProps<{ items: UpcomingItem[] }>()
+const emit = defineEmits<{ select: [item: UpcomingItem] }>()
 
 function countdown(dueAt: string): string {
   const target = new Date(dueAt.replace(' ', 'T')).getTime()
@@ -50,6 +51,11 @@ function itemLabel(item: UpcomingItem): string {
           effect="dark"
           size="large"
           class="cd-tag"
+          role="button"
+          tabindex="0"
+          @click="emit('select', item)"
+          @keydown.enter.prevent="emit('select', item)"
+          @keydown.space.prevent="emit('select', item)"
         >
           {{ itemLabel(item) }} · {{ timeLabel(item) }}（{{ countdown(item.due_at) }}）
         </el-tag>
@@ -68,5 +74,6 @@ function itemLabel(item: UpcomingItem): string {
 .cd-list {
   display: flex; gap: 8px; overflow-x: auto; scrollbar-width: thin; padding: 2px 0;
 }
-.cd-tag { white-space: nowrap; flex-shrink: 0; }
+.cd-tag { white-space: nowrap; flex-shrink: 0; cursor: pointer; transition: transform .16s ease, box-shadow .16s ease; }
+.cd-tag:hover, .cd-tag:focus-visible { transform: translateY(-1px); box-shadow: 0 3px 9px rgba(32, 43, 58, .22); outline: none; }
 </style>

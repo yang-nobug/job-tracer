@@ -3,7 +3,7 @@ import { reactive, ref, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, ApiError } from '../api'
 import { bumpData } from '../store'
-import { STATUS_LABEL_LIST, DEFAULT_CHANNELS, type Application, type Resume, type Status } from '../types'
+import { STATUS_LABEL_LIST, STATUS_LABELS, STATUS_ORDER, DEFAULT_CHANNELS, type Application, type Resume, type Status } from '../types'
 import ResumePicker from './ResumePicker.vue'
 import ApplicationImportDialog, { type ImportChoice } from './ApplicationImportDialog.vue'
 import { isCalendarDate, isClockTime, IMPORT_FIELDS, type ImportDraft } from '../../../shared/application-import'
@@ -44,6 +44,9 @@ const importDraft = ref<ImportDraft | null>(null)
 const importConfirmed = ref(false)
 const importManual = ref(false)
 const formSession = ref(0)
+const stageDialogOpen = ref(false)
+const pendingStageStatus = ref<Status | null>(null)
+const stageForm = reactive({ scheduled_at: '', location: '' })
 const manuallyEdited = new Set<keyof FormState>()
 const autoFilled = new Set<keyof FormState>()
 let applying = false
@@ -150,7 +153,34 @@ watch(
 
 const title = computed(() => (props.editing ? `编辑：${props.editing.company}` : '新增投递'))
 
-async function save(): Promise<void> {
+const STAGE_STATUS_ROUNDS: Partial<Record<Status, string>> = {
+  assessment: '心理测评',
+  testing: '笔试',
+  ai: 'AI面',
+  round1: '一面',
+  round2: '二面',
+  round3: '三面',
+  hr: 'HR面'
+}
+
+function requiredStageRound(status: Status): string | null {
+  return STAGE_STATUS_ROUNDS[status] ?? null
+}
+
+function shouldScheduleStage(): boolean {
+  const initial = props.editing?.status ?? 'unsent'
+  return Boolean(requiredStageRound(form.status)
+    && STATUS_ORDER.indexOf(form.status) > STATUS_ORDER.indexOf(initial))
+}
+
+function openStageDialog(): void {
+  pendingStageStatus.value = form.status
+  stageForm.scheduled_at = ''
+  stageForm.location = ''
+  stageDialogOpen.value = true
+}
+
+async function save(confirmStage = false): Promise<void> {
   if (saving.value) return
   if (!form.company.trim() || !form.position.trim()) {
     ElMessage.warning('公司和职位为必填项')
@@ -159,33 +189,61 @@ async function save(): Promise<void> {
   if (form.status !== 'unsent' && (!form.applied_at || !isCalendarDate(form.applied_at))) { ElMessage.warning('请填写实际投递日期；系统不会自动使用今天'); return }
   if (form.applied_time && !isClockTime(form.applied_time)) { ElMessage.warning('时刻格式应为 HH:mm 或 HH:mm:ss'); return }
   if (importDraft.value && !importConfirmed.value) { ElMessage.warning('请先勾选确认：已核对字段和投递时间'); return }
+  if (!confirmStage && shouldScheduleStage()) {
+    openStageDialog()
+    return
+  }
+  const stageRound = confirmStage && pendingStageStatus.value ? requiredStageRound(pendingStageStatus.value) : null
+  if (stageRound && !stageForm.scheduled_at) { ElMessage.warning('请选择该环节时间'); return }
   saving.value = true
+  let applicationSaved = false
   try {
+    // 创建环节时先保存为当前状态（未投递则先变为已投递），再由面试接口在同一套
+    // 自动推进规则下完成目标状态，避免“只有状态、没有日程”的记录。
+    const persistedStatus: Status = stageRound
+      ? (props.editing?.status === 'unsent' || !props.editing ? 'applied' : props.editing.status)
+      : form.status
     const payload = {
-      company: form.company, position: form.position, status: form.status,
+      company: form.company, position: form.position, status: persistedStatus,
       applied_at: form.applied_at, applied_time: form.applied_time || null, channel: form.channel, location: form.location,
       resume_id: form.resume_id, jd_link: form.jd_link, application_link: form.application_link, jd_text: form.jd_text,
       contact_name: form.contact_name, contact_info: form.contact_info, notes: form.notes,
       import_id: importDraft.value?.id, import_confirmed: importConfirmed.value, import_manual: importManual.value
     }
+    let savedApplication: Application
     if (props.editing) {
-      await api.put(`/applications/${props.editing.id}`, payload)
-      ElMessage.success('已保存')
+      savedApplication = await api.put<Application>(`/applications/${props.editing.id}`, payload)
+      applicationSaved = true
     } else {
-      try { await api.post('/applications', payload) }
+      try { savedApplication = await api.post<Application>('/applications', payload) }
       catch (err) {
         if (!(err instanceof ApiError) || !Array.isArray(err.body.duplicates)) throw err
         const records = err.body.duplicates as { id: number; company: string; position: string }[]
         await ElMessageBox.confirm(`已有相似记录：${records.map(record => `#${record.id} ${record.company} · ${record.position}`).join('；')}。仍要新增一条吗？`, '重复记录提醒', { type: 'warning', confirmButtonText: '确认新增', cancelButtonText: '返回检查' })
-        await api.post('/applications', { ...payload, allow_duplicate: true })
+        savedApplication = await api.post<Application>('/applications', { ...payload, allow_duplicate: true })
       }
+      applicationSaved = true
       committedImport = importDraft.value?.id
-      ElMessage.success('已记录')
+    }
+    if (stageRound) {
+      await api.post(`/applications/${savedApplication.id}/interviews`, {
+        round: stageRound,
+        scheduled_at: stageForm.scheduled_at,
+        location: stageForm.location
+      })
+      stageDialogOpen.value = false
+      pendingStageStatus.value = null
+      ElMessage.success(`已保存并创建${stageRound}日程`)
+    } else {
+      ElMessage.success(props.editing ? '已保存' : '已记录')
     }
     bumpData()
     emit('update:modelValue', false)
   } catch (err) {
-    if (err !== 'cancel' && err !== 'close') ElMessage.error((err as Error).message)
+    if (err !== 'cancel' && err !== 'close') {
+      const suffix = applicationSaved && stageRound ? '岗位信息已保存，但日程创建失败；可重新打开编辑后补充时间。' : ''
+      ElMessage.error(`${(err as Error).message}${suffix ? `；${suffix}` : ''}`)
+    }
   } finally {
     saving.value = false
   }
@@ -336,6 +394,23 @@ const channels = computed(() => DEFAULT_CHANNELS)
       </template>
     </el-dialog>
     <ApplicationImportDialog :key="formSession" ref="importDialog" v-model="importDialogOpen" :draft="importDraft" @apply="applyImport" />
+    <el-dialog v-model="stageDialogOpen" title="补充环节时间" width="420px" append-to-body destroy-on-close>
+      <p class="stage-dialog-tip">
+        状态将进入 <b>{{ pendingStageStatus ? STATUS_LABELS[pendingStageStatus] : '' }}</b>，请填写本次环节时间以创建日程。
+      </p>
+      <el-date-picker
+        v-model="stageForm.scheduled_at"
+        type="datetime"
+        value-format="YYYY-MM-DD HH:mm"
+        placeholder="环节时间"
+        style="width: 100%"
+      />
+      <el-input v-model="stageForm.location" placeholder="地点 / 会议链接（可选）" style="margin-top: 10px" />
+      <template #footer>
+        <el-button @click="stageDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="save(true)">保存并创建日程</el-button>
+      </template>
+    </el-dialog>
   </el-dialog>
 </template>
 
@@ -347,6 +422,7 @@ const channels = computed(() => DEFAULT_CHANNELS)
   transition: border-color 0.15s, background 0.15s;
 }
 .jd-parse-bar:hover { border-color: #409eff; background: #f5f9ff; }
+.stage-dialog-tip { margin: 0 0 14px; color: #606266; font-size: 13px; line-height: 1.6; }
 .jd-parse-icon { font-size: 20px; }
 .jd-parse-text { flex: 1; display: flex; flex-direction: column; gap: 1px; }
 .jd-parse-text b { font-size: 14px; color: #3c4353; }

@@ -527,7 +527,7 @@ const GROUP_COLOR = '#f5a623'
     >
       <div v-if="pendingInterview" class="iv-prompt">
         <p class="iv-prompt-tip">
-          「{{ pendingInterview.app.company }}」进入 <b>{{ STATUS_LABELS[pendingInterview.key] }}</b>，补充时间后会自动生成复盘文档：
+          「{{ pendingInterview.app.company }}」进入 <b>{{ STATUS_LABELS[pendingInterview.key] }}</b>，补充本次环节时间：
         </p>
         <el-date-picker
           v-model="ivForm.scheduled_at"

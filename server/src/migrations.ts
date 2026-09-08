@@ -861,6 +861,26 @@ const migrations: Migration[] = [
           ON knowledge_answer_versions(knowledge_item_id, id DESC);
       `)
     }
+  },
+  {
+    version: 28,
+    name: 'mail_application_status_updates',
+    up(db) {
+      // 一封邮件最多推动一次状态；保留来源和前后状态，取消日程也不会错误回退流程。
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mail_application_status_updates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_mail_candidate_id INTEGER NOT NULL UNIQUE REFERENCES mail_candidates(id) ON DELETE CASCADE,
+          application_id INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+          schedule_id INTEGER REFERENCES recruitment_schedule_items(id) ON DELETE SET NULL,
+          from_status TEXT NOT NULL,
+          to_status TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_application_status_updates_application
+          ON mail_application_status_updates(application_id, created_at DESC);
+      `)
+    }
   }
 ]
 

@@ -12,10 +12,12 @@ const statusRank = (s: string): number => {
 
 statsRouter.get('/stats', (_req: Request, res: Response) => {
   const apps = db
-    .prepare('SELECT status, applied_at, rejected_at, channel FROM applications')
-    .all() as { status: Status; applied_at: string | null; rejected_at: string | null; channel: string | null }[]
+    .prepare('SELECT id, status, applied_at, rejected_at, channel FROM applications')
+    .all() as { id: number; status: Status; applied_at: string | null; rejected_at: string | null; channel: string | null }[]
 
-  // 实际经历过各环节的投递记录数（粒度是岗位/投递，不是公司；可选环节不能按状态排位推断，否则跳过笔试直通一面的会被误算）
+  // 实际经历过各环节的投递记录数（粒度是岗位/投递，不是公司）。
+  // interviews 保留历史经历；当前状态也能明确证明该岗位正在对应环节，二者取并集。
+  // 不能按状态排位反推可选环节，否则跳过笔试直通一面的岗位会被误算。
   const ivRows = db
     .prepare('SELECT application_id, round FROM interviews')
     .all() as { application_id: number; round: string }[]
@@ -25,6 +27,21 @@ statsRouter.get('/stats', (_req: Request, res: Response) => {
     stageApps.get(r.round)!.add(r.application_id)
   }
   const STAGE_ROUNDS = ['心理测评', '笔试', 'AI面', '一面', '二面', '三面', 'HR面']
+  const STATUS_TO_ROUND: Partial<Record<Status, string>> = {
+    assessment: '心理测评',
+    testing: '笔试',
+    ai: 'AI面',
+    round1: '一面',
+    round2: '二面',
+    round3: '三面',
+    hr: 'HR面'
+  }
+  for (const app of apps) {
+    const round = STATUS_TO_ROUND[app.status]
+    if (!round) continue
+    if (!stageApps.has(round)) stageApps.set(round, new Set())
+    stageApps.get(round)!.add(app.id)
+  }
   const stages = STAGE_ROUNDS.map((name) => ({ name, value: stageApps.get(name)?.size ?? 0 }))
   const etc = stageApps.get('其他')?.size
   if (etc) stages.push({ name: '其他', value: etc })

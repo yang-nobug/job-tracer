@@ -61,8 +61,18 @@ export function inspectImage(bytes: Buffer): { mime: string; ext: string; width:
       width = bytes.readUInt16LE(26) & 0x3fff; height = bytes.readUInt16LE(28) & 0x3fff
     }
     if (bytes.readUInt32LE(4) + 8 === bytes.length) { mime = 'image/webp'; ext = 'webp' }
+  } else if (bytes.length >= 54 && bytes.toString('ascii', 0, 2) === 'BM') {
+    // 常见 Windows BMP：14 字节文件头 + BITMAPINFOHEADER（至少 40 字节）。
+    // 高度为负时代表自上而下存储，尺寸仍取绝对值。
+    const dibSize = bytes.readUInt32LE(14)
+    const declaredSize = bytes.readUInt32LE(2)
+    if (dibSize >= 40 && (declaredSize === 0 || declaredSize === bytes.length)) {
+      width = Math.abs(bytes.readInt32LE(18))
+      height = Math.abs(bytes.readInt32LE(22))
+      if (width && height) { mime = 'image/bmp'; ext = 'bmp' }
+    }
   }
-  if (!width || !height || !mime) throw new ImportError('图片文件无效，仅支持 PNG、JPEG、静态 WebP')
+  if (!width || !height || !mime) throw new ImportError('图片文件无效，仅支持 PNG、JPEG、静态 WebP、BMP')
   if (width * height > IMPORT_LIMITS.pixels || width > 24000 || height > 24000) throw new ImportError('图片过长或像素过大，请分段截图后上传（每张最多 1600 万像素）')
   return { mime, ext, width, height }
 }

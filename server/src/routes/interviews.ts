@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { db, now, today } from '../db.js'
-import { createReviewFile, deleteReviewFile, readReviewFile, writeReviewFile } from '../review-file.js'
-import { STATUS_ORDER, STATUS_LABELS, type Status } from '../types.js'
+import { deleteReviewFile, readReviewFile, writeReviewFile } from '../review-file.js'
+import { STATUS_LABELS, type Status } from '../types.js'
+import { canAutomaticallyAdvanceStatus } from '../status-transition.js'
 
 export const interviewsRouter = Router()
 
@@ -17,11 +18,11 @@ const ROUND_TO_STATUS: Record<string, Status> = {
   HR面: 'hr'
 }
 
-// 添加面试：自动生成复盘 md + 写时间线事件
+// 添加面试：只记录安排和时间线；复盘由录音分析完成后生成。
 interviewsRouter.post('/applications/:id/interviews', (req: Request, res: Response) => {
   const app = db
     .prepare('SELECT * FROM applications WHERE id = ?')
-    .get(req.params.id) as { id: number; company: string; status: Status } | undefined
+    .get(req.params.id) as { id: number; status: Status } | undefined
   if (!app) {
     res.status(404).json({ message: '记录不存在' })
     return
@@ -36,13 +37,12 @@ interviewsRouter.post('/applications/:id/interviews', (req: Request, res: Respon
     res.status(422).json({ message: '时间格式应为 YYYY-MM-DD HH:mm' })
     return
   }
-  const reviewFile = createReviewFile(app.company, round, scheduledAt)
   const result = db
     .prepare(
-      `INSERT INTO interviews (application_id, round, scheduled_at, location, review_file, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO interviews (application_id, round, scheduled_at, location, created_at)
+       VALUES (?, ?, ?, ?, ?)`
     )
-    .run(app.id, round, scheduledAt, req.body?.location?.trim() || null, reviewFile, now())
+    .run(app.id, round, scheduledAt, req.body?.location?.trim() || null, now())
 
   db.prepare(
     `INSERT INTO events (application_id, type, event_date, content, created_at)
@@ -51,7 +51,7 @@ interviewsRouter.post('/applications/:id/interviews', (req: Request, res: Respon
 
   // 添加面试时自动推进状态（只前进不后退；「其他」轮次不映射）
   const target = ROUND_TO_STATUS[round]
-  if (target && STATUS_ORDER.indexOf(target) > STATUS_ORDER.indexOf(app.status)) {
+  if (target && canAutomaticallyAdvanceStatus(app.status, target)) {
     db.prepare('UPDATE applications SET status=?, updated_at=? WHERE id=?').run(target, now(), app.id)
     db.prepare(
       `INSERT INTO events (application_id, type, event_date, content, created_at)
@@ -64,19 +64,29 @@ interviewsRouter.post('/applications/:id/interviews', (req: Request, res: Respon
 
 interviewsRouter.patch('/interviews/:id', (req: Request, res: Response) => {
   const iv = db.prepare('SELECT * FROM interviews WHERE id = ?').get(req.params.id) as
-    | { id: number; round: string; scheduled_at: string; location: string | null; done: 0 | 1 }
+    | { id: number; application_id: number; round: string; scheduled_at: string; location: string | null; done: 0 | 1 }
     | undefined
   if (!iv) {
     res.status(404).json({ message: '面试不存在' })
     return
   }
   const round = req.body?.round?.trim() || iv.round
-  const scheduledAt = req.body?.scheduled_at || iv.scheduled_at
+  const requestedScheduledAt = req.body?.scheduled_at
+  if (requestedScheduledAt !== undefined && (typeof requestedScheduledAt !== 'string' || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(requestedScheduledAt.trim()))) {
+    res.status(422).json({ message: '时间格式应为 YYYY-MM-DD HH:mm' })
+    return
+  }
+  const scheduledAt = typeof requestedScheduledAt === 'string' ? requestedScheduledAt.trim() : iv.scheduled_at
   const location = req.body?.location !== undefined ? req.body.location?.trim() || null : iv.location
   const done = req.body?.done !== undefined ? (req.body.done ? 1 : 0) : iv.done
   db.prepare('UPDATE interviews SET round=?, scheduled_at=?, location=?, done=? WHERE id=?').run(
     round, scheduledAt, location, done, iv.id
   )
+  if (scheduledAt !== iv.scheduled_at) {
+    db.prepare(`INSERT INTO events (application_id, type, event_date, content, created_at)
+      VALUES (?, 'interview', ?, ?, ?)`)
+      .run(iv.application_id, today(), `调整面试时间：${iv.round} ${iv.scheduled_at} -> ${scheduledAt}`, now())
+  }
   res.json(db.prepare('SELECT * FROM interviews WHERE id = ?').get(iv.id))
 })
 
@@ -132,9 +142,11 @@ interviewsRouter.put('/interviews/:id/review', (req: Request, res: Response) => 
     res.status(422).json({ message: 'content 不能为空' })
     return
   }
-  if (iv.review_file) {
-    writeReviewFile(iv.review_file, content)
+  if (!iv.review_file) {
+    res.status(409).json({ message: '该场面试尚未通过录音生成复盘' })
+    return
   }
+  writeReviewFile(iv.review_file, content)
   res.json({ ok: true })
 })
 

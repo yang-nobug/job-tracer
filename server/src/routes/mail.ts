@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
-import { db, now } from '../db.js'
+import { db, now, today } from '../db.js'
 import {
   deleteMailAuthorizationCode, hasMailAuthorizationCode, loadMailAuthorizationCode, storeMailAuthorizationCode
 } from '../mail-credential-store.js'
@@ -13,6 +13,8 @@ import { analyzeRecruitmentMail, mailAnalysisError } from '../mail-recruitment-a
 import type { MailRecruitmentExtraction } from '../mail-extraction-contracts.js'
 import type { MailScheduleReview } from '../mail-schedule-review.js'
 import { canAutomaticallyConfirm } from '../mail-automation-policy.js'
+import { STATUS_LABELS, type Status } from '../types.js'
+import { canAutomaticallyAdvanceStatus } from '../status-transition.js'
 import {
   ScheduleValidationError, validateRecruitmentScheduleInput,
   type RecruitmentScheduleInput
@@ -211,6 +213,63 @@ function applicationMatches(extraction: MailRecruitmentExtraction | null, applic
   }).filter(item => item.score >= 5).sort((a, b) => b.score - a.score || b.id - a.id).slice(0, 5)
 }
 
+/** 邮件的公司、岗位匹配由本地确定性规则完成；同分时取最近更新的一条进行中的投递。 */
+function automaticallyMatchedApplicationId(extraction: MailRecruitmentExtraction): number | null {
+  return applicationMatches(extraction, matchableApplications()).find(match => match.score >= 8)?.id ?? null
+}
+
+const EMAIL_EVENT_STATUS: Partial<Record<MailRecruitmentExtraction['event_type'], Status>> = {
+  assessment: 'assessment',
+  written_test: 'testing',
+  ai_interview: 'ai',
+  offer: 'offer'
+}
+
+function interviewRoundStatus(round: string): Status | null {
+  const value = round.normalize('NFKC').replace(/\s/g, '').toLowerCase()
+  if (/^(?:一面|1面|第?一轮(?:面试)?|第?1轮(?:面试)?)$/u.test(value)) return 'round1'
+  if (/^(?:二面|2面|第?二轮(?:面试)?|第?2轮(?:面试)?)$/u.test(value)) return 'round2'
+  if (/^(?:三面|3面|第?三轮(?:面试)?|第?3轮(?:面试)?)$/u.test(value)) return 'round3'
+  if (/^(?:hr(?:面|面试)?|人力资源(?:面试)?)$/iu.test(value)) return 'hr'
+  return null
+}
+
+function extractionTargetStatus(extraction: MailRecruitmentExtraction): Status | null {
+  if (extraction.event_type === 'interview') return interviewRoundStatus(extraction.round)
+  return EMAIL_EVENT_STATUS[extraction.event_type] ?? null
+}
+
+/**
+ * 邮件日程带来的状态变化只向前推进，并以来源邮件做幂等键。
+ * 未识别轮次的人工面试仍会创建日程，但不会猜测为哪一轮。
+ */
+function advanceApplicationStatusFromMail(
+  candidateId: number,
+  scheduleId: number,
+  applicationId: number | null,
+  extraction: MailRecruitmentExtraction
+): void {
+  const target = extractionTargetStatus(extraction)
+  if (!target || applicationId === null) return
+  const application = db.prepare('SELECT id, status, rejected_at FROM applications WHERE id = ?')
+    .get(applicationId) as { id: number; status: Status; rejected_at: string | null } | undefined
+  if (!application || application.rejected_at) return
+  const priorAction = db.prepare(`SELECT id FROM mail_application_status_updates
+    WHERE source_mail_candidate_id = ?`).get(candidateId) as { id: number } | undefined
+  if (priorAction || !canAutomaticallyAdvanceStatus(application.status, target)) return
+
+  const timestamp = now()
+  db.prepare('UPDATE applications SET status = ?, updated_at = ? WHERE id = ?')
+    .run(target, timestamp, application.id)
+  db.prepare(`INSERT INTO events (application_id, type, event_date, content, created_at)
+    VALUES (?, 'status', ?, ?, ?)`)
+    .run(application.id, today(), `邮件通知：${STATUS_LABELS[application.status]} -> ${STATUS_LABELS[target]}`, timestamp)
+  db.prepare(`INSERT INTO mail_application_status_updates (
+    source_mail_candidate_id, application_id, schedule_id, from_status, to_status, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(candidateId, application.id, scheduleId, application.status, target, timestamp)
+}
+
 function publicCandidate(row: MailCandidateRow, applications: ApplicationMatchSource[] = []) {
   let matchedTerms: string[] = []
   try {
@@ -361,8 +420,20 @@ function extractionScheduleInput(extraction: MailRecruitmentExtraction, applicat
   })
 }
 
+/** AI 复核通过后的唯一自动执行路径：日程、关联和状态推进必须在同一事务内完成。 */
+function automaticallyConfirmMailCandidate(candidateId: number, extraction: MailRecruitmentExtraction) {
+  const applicationId = automaticallyMatchedApplicationId(extraction)
+  const input = extractionScheduleInput(extraction, applicationId)
+  return db.transaction(() => {
+    const result = upsertRecruitmentSchedule(candidateId, input)
+    advanceApplicationStatusFromMail(candidateId, result.schedule.id, input.applicationId, extraction)
+    return result
+  })()
+}
+
 function matchableApplications(): ApplicationMatchSource[] {
   return db.prepare(`SELECT id, company, position, status FROM applications
+    WHERE status <> 'unsent' AND rejected_at IS NULL
     ORDER BY updated_at DESC, id DESC`).all() as ApplicationMatchSource[]
 }
 
@@ -683,15 +754,12 @@ mailRouter.post('/mail/candidates/:id/analyze', async (req: Request, res: Respon
       analysis.reviewModel, analysis.reviewPromptVersion, analysis.reviewErrorCode,
       analyzedAt, analyzedAt, candidateId
     )
-    if (!analysis.truncated && canAutomaticallyConfirm(analysis.extraction, analysis.scheduleReview)) {
+    if (canAutomaticallyConfirm(analysis.extraction, analysis.scheduleReview)) {
       try {
         const existingSchedule = db.prepare('SELECT id FROM recruitment_schedule_items WHERE source_mail_candidate_id = ?')
           .get(candidateId) as { id: number } | undefined
         if (!existingSchedule) {
-          const applications = matchableApplications()
-          const matchedApplicationId = applicationMatches(analysis.extraction, applications)
-            .find(match => match.score >= 8)?.id ?? null
-          upsertRecruitmentSchedule(candidateId, extractionScheduleInput(analysis.extraction, matchedApplicationId))
+          automaticallyConfirmMailCandidate(candidateId, analysis.extraction)
         }
       } catch (error) {
         console.warn(`[mail-analysis] candidate_id=${candidateId} auto schedule failed`, error instanceof Error ? error.message : 'unknown')
@@ -748,7 +816,14 @@ mailRouter.post('/mail/candidates/:id/confirm-schedule', (req: Request, res: Res
   }
   try {
     const input = validateRecruitmentScheduleInput(req.body)
-    const result = upsertRecruitmentSchedule(candidateId, input)
+    const result = db.transaction(() => {
+      const saved = upsertRecruitmentSchedule(candidateId, input)
+      // 手动保存已通过复核的草稿时也补齐自动状态推进；来源邮件确保不会重复写事件。
+      if (canAutomaticallyConfirm(extraction, review)) {
+        advanceApplicationStatusFromMail(candidateId, saved.schedule.id, input.applicationId, extraction)
+      }
+      return saved
+    })()
     res.status(result.created ? 201 : 200).json(result.schedule)
   } catch (error) {
     if (error instanceof ScheduleValidationError) {

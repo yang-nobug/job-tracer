@@ -16,6 +16,7 @@ interface ReviewRow extends Interview {
 const rows = ref<ReviewRow[]>([])
 const loading = ref(true)
 const editing = ref<ReviewRow | null>(null)
+const reviewRows = computed(() => rows.value.filter(row => !!row.review_file))
 
 // ---- 录音复盘管道 ----
 const recordings = ref<RecordingRow[]>([])
@@ -167,9 +168,9 @@ onUnmounted(() => {
       </el-card>
     </div>
 
-    <el-empty v-if="!rows.length && !loading" description="还没有面试复盘，去详情里添加面试吧" />
+    <el-empty v-if="!reviewRows.length && !loading" description="还没有面试复盘，上传录音后会自动生成" />
     <div v-else class="review-list">
-      <el-card v-for="row in rows" :key="row.id" shadow="never" class="review-card" @click="editing = row">
+      <el-card v-for="row in reviewRows" :key="row.id" shadow="never" class="review-card" @click="editing = row">
         <div class="r-row">
           <span class="r-company">{{ row.company }}</span>
           <el-tag size="small">{{ row.round }}</el-tag>

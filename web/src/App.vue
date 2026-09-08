@@ -39,6 +39,16 @@ function onMoreCommand(command: string | number | object): void {
   else if (command === 'privacy') privacyOpen.value = true
 }
 
+function openUpcoming(item: UpcomingItem): void {
+  if (!item.application_id) {
+    // 没有关联投递的独立邮件日程无法跳到公司详情，改为打开日程管理页。
+    mailSettingsOpen.value = true
+    return
+  }
+  store.detailId = item.application_id
+  if (!route.path.startsWith('/track')) void router.push('/track/kanban')
+}
+
 async function loadUpcoming(): Promise<void> {
   try {
     upcoming.value = await api.get<UpcomingItem[]>('/upcoming')
@@ -113,7 +123,7 @@ watch(() => store.dataVersion, () => { void loadUpcoming() })
           <el-button v-else class="primary-action" type="primary" @click="openKnowledgeIngest">录入面经</el-button>
         </div>
       </div>
-      <CountdownBar v-if="workspace === 'track'" :items="upcoming" />
+      <CountdownBar v-if="workspace === 'track'" :items="upcoming" @select="openUpcoming" />
     </header>
 
     <main class="main" :class="{ 'main-learn': workspace === 'learn' }">
